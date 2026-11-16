@@ -978,7 +978,14 @@ $('#mic').onclick = async () => {
 const targetSel = $('#target');
 for (const [k, v] of Object.entries(LANGS)) targetSel.add(new Option(v.name, k));
 targetSel.value = S.target;
-targetSel.onchange = () => { S.target = targetSel.value; renderHint(); };
+targetSel.onchange = () => {
+  S.target = targetSel.value; renderHint();
+  if (live && live.langKey && live.langKey !== S.target && live.reconnect) {      // 통역 중에 언어를 바꾸면 연결을 새 언어로 다시 맺음 (안 그러면 처음 언어로 계속 번역됨)
+    live.langKey = S.target; live.h = makeLiveHandlers(S.target); live.pre = [];
+    toast(`${LANGS[S.target].name}(으)로 바꾸는 중…`, 'info', 2000);
+    live.reconnect('언어 변경', true).then(() => toast(`✓ 이제 ${LANGS[S.target].name}(으)로 통역해요`, 'ok', 2500)).catch(() => {});
+  }
+};
 function renderSpeakToggle() {
   const b = $('#speakToggle'); b.textContent = S.autoSpeak ? '🔊 읽어주기 켜짐' : '🔇 글자로만 보기';
   b.classList.toggle('on', S.autoSpeak); $('#autoSpeak').checked = S.autoSpeak; renderHint();
@@ -1418,7 +1425,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
