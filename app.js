@@ -229,24 +229,26 @@ class Live {
 // ---------- Gemini Live API (WebSocket 실시간 통역) ----------
 class GeminiLive {
   constructor(h) { this.h = h; this.ready = false; this.next = 0; this.srcs = []; }
-  setupMsg(langKey, full) {
+  setupMsg(langKey, mode) {
     const T = LANGS[langKey].prompt;
     const setup = {
       model: 'models/' + S.liveModel.replace(/^models\//, ''),
       generationConfig: {responseModalities: ['AUDIO']},
-      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speaker talks in Korean or English. Translate everything they say into ${T} AS SOON AS POSSIBLE, like a simultaneous interpreter: do not wait for the end of a sentence, start speaking after the first few words and continue clause by clause. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If the speech is already in ${T}, or there is only silence or noise, say nothing.`}]},
+      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speaker talks in Korean or English. You receive the talk in short fragments, each one possibly an incomplete sentence. Translate each fragment into ${T} immediately, like a simultaneous interpreter, keeping wording consistent with what you already said. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If the speech is already in ${T}, or there is only silence or noise, say nothing.`}]},
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };
-    if (full) setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', silenceDurationMs: 600}};
+    // manual: 앱이 말 시작/끝을 직접 알려 줌(말하는 도중에도 문장 단위로 번역) · auto: 서버가 판단 · min: 기본 설정
+    if (mode === 'manual') setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {disabled: true}};
+    else if (mode === 'auto') setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', silenceDurationMs: 600}};
     return {setup};
   }
-  connect(langKey, full) {
+  connect(langKey, mode) {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.apiKey));
       this.ws = ws; this.ready = false;
       const timer = setTimeout(() => { reject(new Error('연결 시간 초과 (10초)')); try { ws.close(); } catch {} }, 10000);
-      ws.onopen = () => ws.send(JSON.stringify(this.setupMsg(langKey, full)));
+      ws.onopen = () => ws.send(JSON.stringify(this.setupMsg(langKey, mode)));
       ws.onerror = () => {};
       ws.onclose = ev => {
         clearTimeout(timer);
@@ -263,7 +265,7 @@ class GeminiLive {
   async lost(why) {                                  // 연결이 끊기면 마이크·재생은 그대로 두고 자동 재연결
     this.ready = false; this.h.onStatus?.('🔄 연결이 끊겨 다시 연결 중…');
     for (let i = 0; i < 3 && !this.closing; i++) {
-      try { await this.connect(this.langKey, this.full); this.h.onStatus?.(null); return; }
+      try { this.speaking = false; this.pre = []; await this.connect(this.langKey, this.mode); this.h.onStatus?.(null); return; }
       catch { await new Promise(r => setTimeout(r, 600 * (i + 1))); }
     }
     if (!this.closing) this.h.onClose(why + ' (재연결 실패)');
@@ -275,27 +277,47 @@ class GeminiLive {
     this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000});         // 입력(마이크)·출력(Gemini 음성) 분리
     await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
     this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
-    try { this.full = true; await this.connect(langKey, true); }
-    catch (e1) {                                                             // 일부 옵션이 거부되면 최소 설정으로 한 번 더
-      try { this.full = false; await this.connect(langKey, false); }
-      catch (e2) { await this.stop(); throw new Error(`Live 연결 실패: ${e2.message} (모델: ${S.liveModel})`); }
+    this.pre = []; this.speaking = false; this.noise = 0.008; this.silMs = 0; this.segMs = 0;
+    let lastErr;
+    for (const mode of ['manual', 'auto', 'min']) {                          // 서버가 일부 옵션을 거부하면 더 단순한 설정으로 재시도
+      try { this.mode = mode; await this.connect(langKey, mode); lastErr = null; break; }
+      catch (e) { lastErr = e; }
     }
+    if (lastErr) { await this.stop(); throw new Error(`Live 연결 실패: ${lastErr.message} (모델: ${S.liveModel})`); }
     this.src = this.ictx.createMediaStreamSource(this.stream);
     this.proc = this.ictx.createScriptProcessor(2048, 1, 1);   // 약 43ms 단위로 전송
-    this.proc.onaudioprocess = e => {
-      let d = e.inputBuffer.getChannelData(0);
-      const muted = echoMuted(this.pctx.currentTime < this.next);       // Gemini 음성 재생 중인지
-      if (muted !== this.muted) { this.muted = muted; this.h.onMute?.(muted); }
-      if (muted) d = new Float32Array(d.length);                          // 연결은 유지하되 무음을 전송
-      let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
-      this.h.onLevel(Math.min(1, Math.sqrt(s / d.length) * 6));
-      if (!this.ws || this.ws.readyState !== 1) return;
-      const f = downsample(new Float32Array(d), this.ictx.sampleRate, 16000), pcm = new Int16Array(f.length);
-      for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
-      this.ws.send(JSON.stringify({realtimeInput: {audio: {data: b64(new Uint8Array(pcm.buffer)), mimeType: 'audio/pcm;rate=16000'}}}));
-    };
+    this.proc.onaudioprocess = e => this.frame(new Float32Array(e.inputBuffer.getChannelData(0)));
     this.src.connect(this.proc); this.proc.connect(this.ictx.destination);
     try { this.wake = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+  send(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); }
+  sendAudio(d) {
+    const f = downsample(d, this.ictx.sampleRate, 16000), pcm = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+    this.send({realtimeInput: {audio: {data: b64(new Uint8Array(pcm.buffer)), mimeType: 'audio/pcm;rate=16000'}}});
+  }
+  endActivity() { this.send({realtimeInput: {activityEnd: {}}}); this.speaking = false; this.pre = []; this.h.onActivityEnd?.(); }
+  // 마이크 한 조각(약 43ms) 처리: 재생 중 차단 → 말 시작/끝 감지 → 전송
+  frame(d) {
+    const ms = d.length / this.ictx.sampleRate * 1000;
+    const muted = echoMuted(this.pctx.currentTime < this.next);             // 번역 음성 재생 중인지
+    if (muted !== this.muted) { this.muted = muted; this.h.onMute?.(muted); }
+    if (muted) d = new Float32Array(d.length);                                // 연결은 유지하되 무음 처리
+    let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+    const rms = Math.sqrt(s / d.length);
+    this.h.onLevel(Math.min(1, rms * 6));
+    if (!this.ws || this.ws.readyState !== 1 || !this.ready) return;
+    if (this.mode !== 'manual') return this.sendAudio(d);                    // 서버가 말 끝을 판단하는 모드
+    const speech = rms > Math.max(0.015, this.noise * 3);
+    if (!speech) this.noise = this.noise * 0.95 + rms * 0.05;                // 주변 소음에 적응
+    if (!this.speaking) {
+      this.pre.push(d); if (this.pre.length > 5) this.pre.shift();            // 말 시작 직전 약 0.2초 보존
+      if (speech) { this.send({realtimeInput: {activityStart: {}}}); this.pre.forEach(x => this.sendAudio(x)); this.pre = []; this.speaking = true; this.segMs = 0; this.silMs = 0; }
+      return;
+    }
+    this.sendAudio(d); this.segMs += ms; this.silMs = speech ? 0 : this.silMs + ms;
+    // 0.4초 쉬면 문장 끝 · 2.5초 넘게 말하다 잠깐 숨 쉬면 · 5초 넘으면 강제로 끊어 번역 시작
+    if (this.silMs >= 400 || (this.segMs >= 2500 && this.silMs >= 120) || this.segMs >= 5000) this.endActivity();
   }
   handle(m) {
     if (m.goAway) { this.h.onError('Live 세션이 곧 종료됩니다. 다시 시작해 주세요.'); return; }
@@ -320,6 +342,7 @@ class GeminiLive {
   }
   flush() { this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; }
   async stop() {
+    if (this.speaking) this.endActivity();
     this.closing = true;
     try { this.proc?.disconnect(); this.src?.disconnect(); } catch {}
     this.stream?.getTracks().forEach(t => t.stop());
@@ -377,7 +400,7 @@ function onSegment(wav) {
 }
 // Live 모드: 한 번의 발화(turn)를 카드 하나로 표시
 function makeLiveHandlers(langKey) {
-  let card = null;
+  let card = null, lastEnd = 0;
   const open = () => {
     if (card) return card;
     const el = document.createElement('div'); el.className = 'card';
@@ -394,10 +417,11 @@ function makeLiveHandlers(langKey) {
     onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
     onStatus: s => { if (live) $('#micLabel').textContent = s || '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onMute: m => { if (live) $('#micLabel').textContent = m ? '🔇 번역 재생 중 — 마이크 잠시 멈춤' : '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
+    onActivityEnd: () => { lastEnd = performance.now(); },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
       const c = open(); c.text += t; c.tr.textContent = c.text;
-      if (!c.shown && c.t0) { c.shown = true; c.head.textContent = `인식된 말씀 (실시간) · ⏱ 첫 응답 ${((performance.now() - c.t0) / 1000).toFixed(1)}초`; }
+      if (!c.shown && (lastEnd || c.t0)) { c.shown = true; c.head.textContent = `인식된 말씀 (실시간) · ⏱ 말 끝→번역 ${((performance.now() - (lastEnd || c.t0)) / 1000).toFixed(1)}초`; }
     },
     onTurnEnd: () => {
       const c = card; card = null; if (!c) return;
