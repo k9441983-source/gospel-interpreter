@@ -221,11 +221,11 @@ class GeminiLive {
     const setup = {
       model: 'models/' + S.liveModel.replace(/^models\//, ''),
       generationConfig: {responseModalities: ['AUDIO']},
-      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speaker talks in Korean or English. Immediately translate everything they say into ${T}, and speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If the speech is already in ${T}, or there is only silence or noise, say nothing.`}]},
+      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speaker talks in Korean or English. Translate everything they say into ${T} AS SOON AS POSSIBLE, like a simultaneous interpreter: do not wait for the end of a sentence, start speaking after the first few words and continue clause by clause. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If the speech is already in ${T}, or there is only silence or noise, say nothing.`}]},
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };
-    if (full) setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {silenceDurationMs: 500}};
+    if (full) setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 300}};
     return {setup};
   }
   connect(langKey, full) {
@@ -259,7 +259,7 @@ class GeminiLive {
       catch (e2) { await this.stop(); throw new Error(`Live 연결 실패: ${e2.message} (모델: ${S.liveModel})`); }
     }
     this.src = this.ictx.createMediaStreamSource(this.stream);
-    this.proc = this.ictx.createScriptProcessor(4096, 1, 1);
+    this.proc = this.ictx.createScriptProcessor(2048, 1, 1);   // 약 43ms 단위로 전송
     this.proc.onaudioprocess = e => {
       const d = e.inputBuffer.getChannelData(0);
       let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
@@ -362,12 +362,15 @@ function makeLiveHandlers(langKey) {
     const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 기기 음성으로 다시 듣기';
     b.onclick = () => { TTS.unlock(); TTS.speak(tr.textContent, langKey, $('#warn')); };
     el.append(b); $('#entries').prepend(el); renderHint();
-    return card = {inp, tr, pron, text: ''};
+    return card = {inp, tr, pron, head, text: ''};
   };
   return {
     onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
-    onInput: t => { open().inp.textContent += t; },
-    onOutput: t => { const c = open(); c.text += t; c.tr.textContent = c.text; },
+    onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
+    onOutput: t => {
+      const c = open(); c.text += t; c.tr.textContent = c.text;
+      if (!c.shown && c.t0) { c.shown = true; c.head.textContent = `인식된 말씀 (실시간) · ⏱ 첫 응답 ${((performance.now() - c.t0) / 1000).toFixed(1)}초`; }
+    },
     onTurnEnd: () => {
       const c = card; card = null; if (!c) return;
       if (!c.text.trim()) { c.tr.parentElement.remove(); return; }
