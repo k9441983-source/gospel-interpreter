@@ -7,7 +7,7 @@ const LANGS = {
   hindi:   {name: 'हिन्दी (힌디어)', prompt: 'Hindi (देवनागरी script)', locale: 'hi-IN'},
   both:    {name: '⇄ 양방향 (한국어·영어 ↔ 텔루구어, 텔루구어는 한국어+영어)', prompt: 'Telugu or Korean (two-way)', locale: 'te-IN'},
 };
-const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'}, {id: 'telugu', label: '텔루구어'}];
+const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'kjv', label: 'KJV'}, {id: 'krv', label: '개역한글'}, {id: 'telugu', label: '텔루구어'}];
 
 // ---------- 설정 ----------
 const S = {
@@ -1185,7 +1185,7 @@ async function startBookPlayer(resume) {                                        
     const tracks = chapters.map((items, n) => ({n, items, title: `${name} ${n + 1}장`})).filter(t => t.items.some(x => x && x.trim()));
     const startN = last ? last.n : B.chapter, si = Math.max(0, tracks.findIndex(t => t.n === startN));
     if (last && S.readLang !== last.lang) { S.readLang = last.lang; syncReadSeg(); renderBible(); }
-    await PL.start({human: S.readSrc === 'human', tracks, lang, book, bookName: name, bibleName: {krv: '개역한글', telugu: '텔루구어 성경', nkjv: 'NKJV'}[id]}, si, last ? last.t : 0);
+    await PL.start({human: S.readSrc === 'human', tracks, lang, book, bookName: name, bibleName: {krv: '개역한글', telugu: '텔루구어 성경', kjv: 'KJV', nkjv: 'NKJV'}[id]}, si, last ? last.t : 0);
   } catch (e) { toast('플레이어를 시작하지 못했어요: ' + e.message.slice(0, 100), 'warn', 6000); }
 }
 function updateResume() {
@@ -1226,7 +1226,7 @@ let curTe = [], curReadOther = [];
 const HUMAN_ID = {korean: 11, telugu: 29, english: 1};                         // Wordproject 오디오 성경 언어 번호
 const humanUrl = (lang, book, n) => `https://www.wordproaudio.net/bibles/app/audio/${HUMAN_ID[lang]}/${book + 1}/${n + 1}.mp3`;
 function applyReadSrc() { const h = S.readSrc === 'human'; document.querySelectorAll('.dlrow').forEach(e => e.hidden = h); $('#dlNT').hidden = h; if ($('#readSrc')) $('#readSrc').value = S.readSrc; }
-const READ_ID = {korean: 'krv', telugu: 'telugu', english: 'nkjv'}, READ_NAME = {korean: '한국어', telugu: '텔루구어', english: '영어'};
+const READ_ID = {korean: 'krv', telugu: 'telugu', get english() { return S.readSrc === 'human' ? 'kjv' : 'nkjv'; }}, READ_NAME = {korean: '한국어', telugu: '텔루구어', english: '영어'};
 const readId = () => READ_ID[S.readLang] || 'telugu';
 const readItems = () => S.readLang === 'telugu' ? curTe : curReadOther;       // 지금 '듣기' 언어의 이 장 구절들 (구절 번호 순서)
 async function renderBible() {
@@ -1336,7 +1336,7 @@ $('#dlText').onclick = async () => {                          // 성경 글자(3
     }
   } catch (e) { fail++; }
   delete b.dataset.busy; b.textContent = '📖 성경 글자 전부 저장 (오프라인)';
-  toast(fail ? `${fail}권을 받지 못했어요. 다시 눌러 주세요` : '✓ 개역한글·NKJV·텔루구어 글자를 모두 저장했어요 (인터넷 없이도 열려요)', fail ? 'warn' : 'ok', 5000);
+  toast(fail ? `${fail}권을 받지 못했어요. 다시 눌러 주세요` : '✓ 개역한글·NKJV·KJV·텔루구어 글자를 모두 저장했어요 (인터넷 없이도 열려요)', fail ? 'warn' : 'ok', 5000);
 };
 $('#clearStore').onclick = async () => {
   if (!confirm('저장된 음성을 모두 지울까요? 다시 들으려면 새로 만들어야 해요.')) return;
@@ -1418,7 +1418,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -1494,7 +1494,7 @@ $('#refreshMic').onclick = () => refreshMics(true);
 if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => refreshMics(false));
 $('#lite').onchange = e => { S.lite = e.target.checked; S.liteAuto = false; applyLite(); };
 $('#showPron').onchange = e => S.showPron = e.target.checked;
-$('#readSrc').onchange = e => { S.readSrc = e.target.value; applyReadSrc(); };
+$('#readSrc').onchange = e => { S.readSrc = e.target.value; applyReadSrc(); renderBible(); };
 applyReadSrc();
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
 $('#testKey').onclick = async () => {
