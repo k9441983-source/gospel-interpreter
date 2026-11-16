@@ -15,9 +15,13 @@ const S = {
   // 직접 입력한 모델이 있으면 우선, 없으면 속도 모드에 따라 선택
   get customModel() { return localStorage.getItem('modelCustom') || ''; },
   set customModel(v) { localStorage.setItem('modelCustom', v.trim()); },
-  get speed() { return localStorage.getItem('speed') || 'fast'; },
+  get liveModel() { return localStorage.getItem('liveModel') || 'gemini-2.5-flash-native-audio-preview-12-2025'; },
+  set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
+  get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
+  set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
+  get speed() { return localStorage.getItem('speed') || 'live'; },
   set speed(v) { localStorage.setItem('speed', v); },
-  get model() { return this.customModel || (this.speed === 'fast' ? 'gemini-2.5-flash-lite' : 'gemini-2.5-flash'); },
+  get model() { return this.customModel || (this.speed === 'accurate' ? 'gemini-2.5-flash' : 'gemini-2.5-flash-lite'); },
   get target() { return localStorage.getItem('target') || 'telugu'; },
   set target(v) { localStorage.setItem('target', v); },
   get autoSpeak() { return localStorage.getItem('autoSpeak') !== '0'; },
@@ -208,6 +212,98 @@ class Live {
   }
 }
 
+
+// ---------- Gemini Live API (WebSocket 실시간 통역) ----------
+class GeminiLive {
+  constructor(h) { this.h = h; this.ready = false; this.next = 0; this.srcs = []; }
+  setupMsg(langKey, full) {
+    const T = LANGS[langKey].prompt;
+    const setup = {
+      model: 'models/' + S.liveModel.replace(/^models\//, ''),
+      generationConfig: {responseModalities: ['AUDIO']},
+      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speaker talks in Korean or English. Immediately translate everything they say into ${T}, and speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If the speech is already in ${T}, or there is only silence or noise, say nothing.`}]},
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+    };
+    if (full) setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {silenceDurationMs: 500}};
+    return {setup};
+  }
+  connect(langKey, full) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.apiKey));
+      this.ws = ws; this.ready = false;
+      const timer = setTimeout(() => { reject(new Error('연결 시간 초과 (10초)')); try { ws.close(); } catch {} }, 10000);
+      ws.onopen = () => ws.send(JSON.stringify(this.setupMsg(langKey, full)));
+      ws.onerror = () => {};
+      ws.onclose = ev => {
+        clearTimeout(timer);
+        const why = `연결 종료 (${ev.code}${ev.reason ? ': ' + ev.reason : ''})`;
+        if (!this.ready) reject(new Error(why)); else if (!this.closing) this.h.onClose(why);
+      };
+      ws.onmessage = async ev => {
+        let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text()); } catch { return; }
+        if (m.setupComplete) { this.ready = true; clearTimeout(timer); resolve(); return; }
+        this.handle(m);
+      };
+    });
+  }
+  async start(langKey) {
+    if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000});         // 입력(마이크)·출력(Gemini 음성) 분리
+    await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
+    this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    try { await this.connect(langKey, true); }
+    catch (e1) {                                                             // 일부 옵션이 거부되면 최소 설정으로 한 번 더
+      try { await this.connect(langKey, false); }
+      catch (e2) { await this.stop(); throw new Error(`Live 연결 실패: ${e2.message} (모델: ${S.liveModel})`); }
+    }
+    this.src = this.ictx.createMediaStreamSource(this.stream);
+    this.proc = this.ictx.createScriptProcessor(4096, 1, 1);
+    this.proc.onaudioprocess = e => {
+      const d = e.inputBuffer.getChannelData(0);
+      let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+      this.h.onLevel(Math.min(1, Math.sqrt(s / d.length) * 6));
+      if (!this.ws || this.ws.readyState !== 1) return;
+      const f = downsample(new Float32Array(d), this.ictx.sampleRate, 16000), pcm = new Int16Array(f.length);
+      for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+      this.ws.send(JSON.stringify({realtimeInput: {audio: {data: b64(new Uint8Array(pcm.buffer)), mimeType: 'audio/pcm;rate=16000'}}}));
+    };
+    this.src.connect(this.proc); this.proc.connect(this.ictx.destination);
+    try { this.wake = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+  handle(m) {
+    if (m.goAway) { this.h.onError('Live 세션이 곧 종료됩니다. 다시 시작해 주세요.'); return; }
+    const sc = m.serverContent; if (!sc) return;
+    if (sc.interrupted) this.flush();
+    if (sc.inputTranscription?.text) this.h.onInput(sc.inputTranscription.text);
+    if (sc.outputTranscription?.text) this.h.onOutput(sc.outputTranscription.text);
+    for (const p of sc.modelTurn?.parts || []) {
+      const d = p.inlineData;
+      if (d?.data && /audio/.test(d.mimeType || '') && S.geminiVoice) this.play(d.data);
+    }
+    if (sc.turnComplete) this.h.onTurnEnd();
+  }
+  play(b64data) {                                                            // 24kHz 16bit PCM 이어붙여 재생
+    const bin = atob(b64data), n = bin.length >> 1;
+    const buf = this.pctx.createBuffer(1, n, 24000), ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) { const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); ch[i] = (v >= 0x8000 ? v - 0x10000 : v) / 32768; }
+    const src = this.pctx.createBufferSource(); src.buffer = buf; src.connect(this.pctx.destination);
+    const t = Math.max(this.pctx.currentTime + 0.03, this.next); src.start(t); this.next = t + buf.duration;
+    this.srcs.push(src); src.onended = () => { this.srcs = this.srcs.filter(x => x !== src); };
+  }
+  flush() { this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; }
+  async stop() {
+    this.closing = true;
+    try { this.proc?.disconnect(); this.src?.disconnect(); } catch {}
+    this.stream?.getTracks().forEach(t => t.stop());
+    try { await this.wake?.release(); } catch {}
+    try { this.ws?.close(); } catch {}
+    this.flush();
+    try { await this.ictx?.close(); await this.pctx?.close(); } catch {}
+  }
+}
+
 // ---------- 통역 탭 ----------
 let live = null, pending = 0, chain = Promise.resolve();
 const entries = [];
@@ -231,7 +327,7 @@ function addEntry(r, langKey, secs) {
 function setPhase(p) {
   $('#mic').classList.toggle('rec', p === 'live');
   $('#micIcon').textContent = p === 'live' ? '⏹' : '🎤';
-  $('#micLabel').textContent = p === 'live' ? '🔴 실시간 통역 중… 멈추려면 누르세요' : '눌러서 실시간 통역 시작';
+  $('#micLabel').textContent = p === 'live' ? (S.speed === 'live' ? '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)' : '🔴 실시간 통역 중… 멈추려면 누르세요') : '눌러서 실시간 통역 시작';
   $('#meter').hidden = p !== 'live';
   $('#mic').dataset.phase = p;
 }
@@ -253,10 +349,48 @@ function onSegment(wav) {
       koreanPronunciation([r.translation], langKey).then(o => pron.textContent = o[0]).catch(() => {});
   });
 }
+// Live 모드: 한 번의 발화(turn)를 카드 하나로 표시
+function makeLiveHandlers(langKey) {
+  let card = null;
+  const open = () => {
+    if (card) return card;
+    const el = document.createElement('div'); el.className = 'card';
+    const mk = (cls) => { const d = document.createElement('div'); d.className = cls; return d; };
+    const head = mk('small'); head.textContent = '인식된 말씀 (실시간)';
+    const inp = mk(''), hr = document.createElement('hr'), tr = mk('tr'), pron = mk('pron');
+    el.append(head, inp, hr, tr, pron);
+    const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 기기 음성으로 다시 듣기';
+    b.onclick = () => { TTS.unlock(); TTS.speak(tr.textContent, langKey, $('#warn')); };
+    el.append(b); $('#entries').prepend(el); renderHint();
+    return card = {inp, tr, pron, text: ''};
+  };
+  return {
+    onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
+    onInput: t => { open().inp.textContent += t; },
+    onOutput: t => { const c = open(); c.text += t; c.tr.textContent = c.text; },
+    onTurnEnd: () => {
+      const c = card; card = null; if (!c) return;
+      if (!c.text.trim()) { c.tr.parentElement.remove(); return; }
+      if (!S.geminiVoice && S.autoSpeak) TTS.enqueue(c.text, langKey, $('#warn'));
+      if (S.showPron && langKey !== 'korean')
+        koreanPronunciation([c.text], langKey).then(o => c.pron.textContent = o[0]).catch(() => {});
+    },
+    onError: msg => show($('#err'), msg),
+    onClose: msg => { show($('#err'), msg + ' — 다시 시작해 주세요.'); live = null; setPhase('idle'); },
+  };
+}
 $('#mic').onclick = async () => {
   show($('#err'), '');
   if (live) { const l = live; live = null; setPhase('idle'); await l.stop(); return; }
   TTS.unlock(); TTS.stop();
+  if (S.speed === 'live') {
+    $('#micLabel').textContent = 'Gemini Live 연결 중…';
+    const l = new GeminiLive(makeLiveHandlers(S.target));
+    live = l;
+    try { await l.start(S.target); if (live === l) setPhase('live'); }
+    catch (e) { live = null; setPhase('idle'); show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
+    return;
+  }
   const l = new Live(onSegment, lv => $('#meter i').style.width = (lv * 100) + '%');
   try { await l.start(); live = l; setPhase('live'); }
   catch (e) { show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
@@ -367,9 +501,11 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 // ---------- 설정 탭 ----------
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
-$('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
+$('#liveModel').value = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
 $('#apiKey').onchange = e => S.apiKey = e.target.value;
 $('#model').onchange = e => S.customModel = e.target.value;
+$('#liveModel').onchange = e => S.liveModel = e.target.value || 'gemini-2.5-flash-native-audio-preview-12-2025';
+$('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
 $('#autoSpeak').onchange = e => S.autoSpeak = e.target.checked;
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
