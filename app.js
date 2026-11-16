@@ -35,6 +35,8 @@ const S = {
   set micLabel(v) { if (v) localStorage.setItem('micLabel', v); else localStorage.removeItem('micLabel'); },
   get readLang() { return localStorage.getItem('readLang') || 'telugu'; },
   set readLang(v) { localStorage.setItem('readLang', v); },
+  get readSrc() { return localStorage.getItem('readSrc') || 'human'; },          // human: 사람 낭독 MP3 / ai: Gemini 음성
+  set readSrc(v) { localStorage.setItem('readSrc', v); },
   get callMode() { return localStorage.getItem('callMode') === '1'; },
   set callMode(v) { localStorage.setItem('callMode', v ? '1' : '0'); },
   get callReadKorean() { return localStorage.getItem('callReadKorean') === '1'; },
@@ -1124,7 +1126,8 @@ const PL = {
   async load(idx, my = this.gen) {
     const t = this.tracks[idx], el = this.el; this.busy = true; this.status(`⏳ ${t.title} 준비 중…`);
     let url;
-    try { url = await this.build(idx, (d, n) => { if (my === this.gen) this.status(`⏳ ${t.title} 음성 ${d}/${n} 준비 중…`); }); }
+    if (this.spec.human) url = humanUrl(this.spec.lang, this.spec.book, t.n);
+    else try { url = await this.build(idx, (d, n) => { if (my === this.gen) this.status(`⏳ ${t.title} 음성 ${d}/${n} 준비 중…`); }); }
     catch (e) { if (my !== this.gen) return; this.busy = false; this.status('음성을 준비하지 못했어요'); toast('음성을 준비하지 못했어요: ' + e.message.slice(0, 120) + ' — 먼저 "미리 받기"로 저장해 두면 확실해요', 'warn', 8000); return; }
     if (my !== this.gen) return;
     this.i = idx; this.busy = false; el.src = url; el.playbackRate = this.rate; el.defaultPlaybackRate = this.rate;
@@ -1132,7 +1135,7 @@ const PL = {
     this.meta(t); this.status(t.title);                                          // 잠금 화면 정보는 재생 시작 전에 설정
     try { await el.play(); } catch { toast('재생을 시작하지 못했어요. ▶ 버튼을 눌러 주세요', 'warn', 5000); }
     this.setBtn();
-    this.build(idx + 1)?.catch(() => {});                                         // 다음 장을 미리 준비: 화면이 꺼져 있어도 끊기지 않게
+    if (!this.spec.human) this.build(idx + 1)?.catch(() => {});                                         // 다음 장을 미리 준비: 화면이 꺼져 있어도 끊기지 않게
     for (const [k, p] of this.building) if (k < idx) { p.then(u => URL.revokeObjectURL(u)).catch(() => {}); this.building.delete(k); }   // 지난 장의 메모리 정리
   },
   advance() {
@@ -1172,7 +1175,7 @@ const PL = {
   },
 };
 async function startBookPlayer(resume) {                                          // 이 책을 현재 장부터 (또는 마지막으로 듣던 곳부터) 이어서
-  if (!S.apiKey) return toast('설정에서 API 키를 먼저 입력해 주세요', 'warn');
+  if (S.readSrc !== 'human' && !S.apiKey) return toast('설정에서 API 키를 먼저 입력해 주세요', 'warn');
   const last = resume ? JSON.parse(localStorage.plLast || 'null') : null;
   if (resume && !last) return;
   const lang = last ? last.lang : S.readLang, book = last ? last.book : B.book, id = READ_ID[lang];
@@ -1182,7 +1185,7 @@ async function startBookPlayer(resume) {                                        
     const tracks = chapters.map((items, n) => ({n, items, title: `${name} ${n + 1}장`})).filter(t => t.items.some(x => x && x.trim()));
     const startN = last ? last.n : B.chapter, si = Math.max(0, tracks.findIndex(t => t.n === startN));
     if (last && S.readLang !== last.lang) { S.readLang = last.lang; syncReadSeg(); renderBible(); }
-    await PL.start({tracks, lang, book, bookName: name, bibleName: {krv: '개역한글', telugu: '텔루구어 성경', nkjv: 'NKJV'}[id]}, si, last ? last.t : 0);
+    await PL.start({human: S.readSrc === 'human', tracks, lang, book, bookName: name, bibleName: {krv: '개역한글', telugu: '텔루구어 성경', nkjv: 'NKJV'}[id]}, si, last ? last.t : 0);
   } catch (e) { toast('플레이어를 시작하지 못했어요: ' + e.message.slice(0, 100), 'warn', 6000); }
 }
 function updateResume() {
@@ -1220,6 +1223,9 @@ $('#chPrev').onclick = () => { if (B.chapter > 0) { B.chapter--; renderBible(); 
 $('#chNext').onclick = () => { B.chapter++; renderBible(); };
 
 let curTe = [], curReadOther = [];
+const HUMAN_ID = {korean: 11, telugu: 29, english: 1};                         // Wordproject 오디오 성경 언어 번호
+const humanUrl = (lang, book, n) => `https://www.wordproaudio.net/bibles/app/audio/${HUMAN_ID[lang]}/${book + 1}/${n + 1}.mp3`;
+function applyReadSrc() { const h = S.readSrc === 'human'; document.querySelectorAll('.dlrow').forEach(e => e.hidden = h); $('#dlNT').hidden = h; if ($('#readSrc')) $('#readSrc').value = S.readSrc; }
 const READ_ID = {korean: 'krv', telugu: 'telugu', english: 'nkjv'}, READ_NAME = {korean: '한국어', telugu: '텔루구어', english: '영어'};
 const readId = () => READ_ID[S.readLang] || 'telugu';
 const readItems = () => S.readLang === 'telugu' ? curTe : curReadOther;       // 지금 '듣기' 언어의 이 장 구절들 (구절 번호 순서)
@@ -1337,6 +1343,7 @@ $('#clearStore').onclick = async () => {
   await AudioDB.clear(); GT.cache.clear(); updateStoreInfo(); refreshDl(); toast('저장된 음성을 지웠어요', 'ok', 2500);
 };
 $('#playChapter').onclick = () => {
+  if (S.readSrc === 'human') return startBookPlayer(false);                    // 사람 낭독: 이 장부터 이어서 재생
   if (PL.active()) PL.stop();
   TTS.unlock();
   if (!readItems().some(t => t && t.trim())) { toast('본문을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요', 'warn', 3500); return; }   // 반응 없이 끝나지 않도록
@@ -1411,7 +1418,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v32';
+const APP_VERSION = 'v33';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -1487,6 +1494,8 @@ $('#refreshMic').onclick = () => refreshMics(true);
 if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => refreshMics(false));
 $('#lite').onchange = e => { S.lite = e.target.checked; S.liteAuto = false; applyLite(); };
 $('#showPron').onchange = e => S.showPron = e.target.checked;
+$('#readSrc').onchange = e => { S.readSrc = e.target.value; applyReadSrc(); };
+applyReadSrc();
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
 $('#testKey').onclick = async () => {
   const out = $('#keyResult'); out.textContent = '확인 중…';
