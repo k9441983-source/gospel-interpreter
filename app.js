@@ -86,7 +86,7 @@ function echoMuted(geminiPlaying) {
   if (!S.muteOnPlay) return false;
   const now = performance.now();
   if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending) lastEcho = now;
-  return now - lastEcho < 450;
+  return now - lastEcho < 250;
 }
 
 // ---------- 오디오 유틸 ----------
@@ -238,7 +238,7 @@ class GeminiLive {
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };
-    if (full) setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH', silenceDurationMs: 300}};
+    if (full) setup.realtimeInputConfig = {activityHandling: 'NO_INTERRUPTION', automaticActivityDetection: {startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH', silenceDurationMs: 600}};
     return {setup};
   }
   connect(langKey, full) {
@@ -251,7 +251,7 @@ class GeminiLive {
       ws.onclose = ev => {
         clearTimeout(timer);
         const why = `연결 종료 (${ev.code}${ev.reason ? ': ' + ev.reason : ''})`;
-        if (!this.ready) reject(new Error(why)); else if (!this.closing) this.h.onClose(why);
+        if (!this.ready) reject(new Error(why)); else if (!this.closing && this.ws === ws) this.lost(why);
       };
       ws.onmessage = async ev => {
         let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text()); } catch { return; }
@@ -260,15 +260,24 @@ class GeminiLive {
       };
     });
   }
+  async lost(why) {                                  // 연결이 끊기면 마이크·재생은 그대로 두고 자동 재연결
+    this.ready = false; this.h.onStatus?.('🔄 연결이 끊겨 다시 연결 중…');
+    for (let i = 0; i < 3 && !this.closing; i++) {
+      try { await this.connect(this.langKey, this.full); this.h.onStatus?.(null); return; }
+      catch { await new Promise(r => setTimeout(r, 600 * (i + 1))); }
+    }
+    if (!this.closing) this.h.onClose(why + ' (재연결 실패)');
+  }
   async start(langKey) {
+    this.langKey = langKey;
     if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000});         // 입력(마이크)·출력(Gemini 음성) 분리
     await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
     this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
-    try { await this.connect(langKey, true); }
+    try { this.full = true; await this.connect(langKey, true); }
     catch (e1) {                                                             // 일부 옵션이 거부되면 최소 설정으로 한 번 더
-      try { await this.connect(langKey, false); }
+      try { this.full = false; await this.connect(langKey, false); }
       catch (e2) { await this.stop(); throw new Error(`Live 연결 실패: ${e2.message} (모델: ${S.liveModel})`); }
     }
     this.src = this.ictx.createMediaStreamSource(this.stream);
@@ -305,7 +314,8 @@ class GeminiLive {
     const buf = this.pctx.createBuffer(1, n, 24000), ch = buf.getChannelData(0);
     for (let i = 0; i < n; i++) { const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); ch[i] = (v >= 0x8000 ? v - 0x10000 : v) / 32768; }
     const src = this.pctx.createBufferSource(); src.buffer = buf; src.connect(this.pctx.destination);
-    const t = Math.max(this.pctx.currentTime + 0.03, this.next); src.start(t); this.next = t + buf.duration;
+    // 첫 조각은 0.1초 여유를 두고 시작 (네트워크 지연으로 인한 끊김 방지)
+    const t = Math.max(this.pctx.currentTime + 0.1, this.next); src.start(t); this.next = t + buf.duration;
     this.srcs.push(src); src.onended = () => { this.srcs = this.srcs.filter(x => x !== src); };
   }
   flush() { this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; }
@@ -382,6 +392,7 @@ function makeLiveHandlers(langKey) {
   };
   return {
     onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
+    onStatus: s => { if (live) $('#micLabel').textContent = s || '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onMute: m => { if (live) $('#micLabel').textContent = m ? '🔇 번역 재생 중 — 마이크 잠시 멈춤' : '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
