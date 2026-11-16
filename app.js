@@ -374,9 +374,14 @@ function renderModelInfo() {
 }
 
 let forceModel = '';
-async function gemini(body, attempt = 0) {
+// 서버가 바빠서 거절(503 등)할 때 쓸 대체 모델: 지금 쓰는 모델과 다른, 쓸 수 있는 모델
+function altModel(model) {
+  const c = modelCache();
+  return [c.accurate, c.fast, 'gemini-flash-latest', 'gemini-flash-lite-latest'].find(m => m && m !== model) || '';
+}
+async function gemini(body, attempt = 0, alt = '') {
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
-  const model = forceModel || S.model; let r;
+  const model = alt || forceModel || S.model; let r;
   const ac = new AbortController(), gtimer = setTimeout(() => ac.abort(), +(window.__gemTimeout || 25000));   // 요청 하나가 멈춰도 뒤의 번역이 막히지 않게
   const rejected = k => localStorage.getItem(`reject:${k}:${model}`) === '1';          // 이 모델이 이미 거부한 옵션인지
   if (/flash/.test(model) && !body.__noThink && !rejected('think')) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
@@ -395,9 +400,15 @@ async function gemini(body, attempt = 0) {
   clearTimeout(gtimer);
   if (!r.ok) {
     const msg = data.error?.message || '알 수 없는 오류';
+    if ((r.status === 503 || r.status === 500 || r.status === 502 || r.status === 504) && attempt < 4) {   // 서버가 일시적으로 바쁨: 잠깐 뒤 다시, 계속 안 되면 다른 모델로
+      const useAlt = attempt >= 1 ? (alt || (S.customModel ? '' : altModel(model))) : alt;
+      const w = 600 * (attempt + 1) + Math.random() * 300;
+      toast(`서버가 바빠서 다시 시도해요${useAlt && useAlt !== model ? ' (다른 모델로)' : ''}`, 'warn', 2500);
+      await sleep(w); return gemini(body, attempt + 1, useAlt);
+    }
     if (r.status === 429) {                                               // 사용량 제한: 잠깐 기다렸다 다시, 한도를 다 쓴 경우는 이유를 알림
       if (/limit:\s*0\b|PerDay|free[_ ]?tier/i.test(JSON.stringify(data.error || {}))) throw new Error('Gemini 사용 한도를 모두 썼어요 (무료 한도는 하루치가 정해져 있어요). 내일 다시 쓰거나 Google AI Studio에서 결제를 설정하세요.');
-      if (attempt < 3) { const w = Math.min(retryAfter(data, msg) || 5, 20); toast(`사용량 제한 — ${Math.ceil(w)}초 뒤 다시 시도해요`, 'warn', w * 1000); await sleep(w * 1000); return gemini(body, attempt + 1); }
+      if (attempt < 3) { const w = Math.min(retryAfter(data, msg) || 5, 20); toast(`사용량 제한 — ${Math.ceil(w)}초 뒤 다시 시도해요`, 'warn', w * 1000); await sleep(w * 1000); return gemini(body, attempt + 1, alt); }
     }
     if (attempt < 2 && !S.customModel && (r.status === 404 || /no longer available|not found|deprecated/i.test(msg))) {
       await discoverModels(true);                                            // 단종된 모델 → 내 키로 쓸 수 있는 최신 모델을 다시 찾음
@@ -405,7 +416,7 @@ async function gemini(body, attempt = 0) {
         const rec = msg.match(/models\/([\w.\-]+)/g)?.map(x => x.slice(7)).find(x => x !== model);
         if (rec) { const c = modelCache(); c[S.speed === 'accurate' ? 'accurate' : 'fast'] = rec; c.t = Date.now(); localStorage.setItem('modelsCache', JSON.stringify(c)); }
       }
-      if (S.model !== model) { renderModelInfo(); return gemini(body, attempt + 1); }
+      if (S.model !== model) { renderModelInfo(); return gemini(body, attempt + 1, alt); }
     }
     if (attempt < 3 && r.status === 400) {                                  // 일부 모델이 거부하는 옵션을 단계적으로 빼고 재시도
       const gc = {...(body.generationConfig || {})};
@@ -413,13 +424,13 @@ async function gemini(body, attempt = 0) {
       if (gc.thinkingConfig) { delete gc.thinkingConfig; dropped = 'think'; }          // 1단계: 추론 생략 옵션 제거
       else if (gc.responseSchema) { delete gc.responseSchema; dropped = 'schema'; }    // 2단계: 응답 스키마 제거(JSON 형식은 유지)
       if (dropped) {
-        const res = await gemini({...body, __noThink: true, generationConfig: gc}, attempt + 1);
+        const res = await gemini({...body, __noThink: true, generationConfig: gc}, attempt + 1, alt);
         localStorage.setItem(`reject:${dropped}:${model}`, '1');                         // 성공했으면 이 모델은 해당 옵션을 거부하는 것으로 기억
         return res;
       }
     }
     const det = data.error?.details ? ' ' + JSON.stringify(data.error.details).slice(0, 240) : '';
-    throw new Error(`Gemini 오류 (${r.status}): ${msg}${det} [모델: ${model}]`);
+    throw new Error(`Gemini 오류 (${r.status}): ${r.status >= 500 ? '서버가 바빠요. 잠시 뒤 다시 말씀해 주세요. — ' : ''}${msg}${det} [모델: ${model}]`);
   }
   const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).find(Boolean);
   if (!text) throw new Error('Gemini 응답을 해석하지 못했습니다.');
@@ -730,7 +741,7 @@ class GeminiLive {
   flush() { this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; }
   async stop() {
     if (this.speaking) this.endActivity();
-    this.closing = true; clearInterval(this.watch); if (this.onVis) document.removeEventListener('visibilitychange', this.onVis);
+    this.closing = true; audioSession('auto'); clearInterval(this.watch); if (this.onVis) document.removeEventListener('visibilitychange', this.onVis);
     try { this.proc?.disconnect(); this.src?.disconnect(); } catch {}
     this.stream?.getTracks().forEach(t => t.stop());
     try { await this.wake?.release(); } catch {}
@@ -1091,7 +1102,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v27';
+const APP_VERSION = 'v28';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
