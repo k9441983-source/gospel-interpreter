@@ -19,6 +19,8 @@ const S = {
   set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
   get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
+  get muteOnPlay() { return localStorage.getItem('muteOnPlay') !== '0'; },
+  set muteOnPlay(v) { localStorage.setItem('muteOnPlay', v ? '1' : '0'); },
   get speed() { return localStorage.getItem('speed') || 'live'; },
   set speed(v) { localStorage.setItem('speed', v); },
   get model() { return this.customModel || (this.speed === 'accurate' ? 'gemini-2.5-flash' : 'gemini-2.5-flash-lite'); },
@@ -76,6 +78,16 @@ const TTS = {
 };
 if ('speechSynthesis' in window) { TTS.load(); speechSynthesis.onvoiceschanged = () => TTS.load(); }
 $('#stopBtn').onclick = () => TTS.stop();
+
+// ---------- 폰 스피커 소리가 마이크로 다시 들어가는 것 방지 ----------
+let lastEcho = -1e9;
+// 번역 소리(기기 음성 또는 Gemini 음성)가 나오는 동안과 직후 0.45초는 마이크 입력을 무시한다.
+function echoMuted(geminiPlaying) {
+  if (!S.muteOnPlay) return false;
+  const now = performance.now();
+  if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending) lastEcho = now;
+  return now - lastEcho < 450;
+}
 
 // ---------- 오디오 유틸 ----------
 function downsample(buf, from, to) {
@@ -181,6 +193,7 @@ class Live {
     try { this.wake = await navigator.wakeLock?.request('screen'); } catch {}
   }
   feed(d) {
+    if (echoMuted(false)) d = new Float32Array(d.length);      // 번역 소리가 나는 동안은 무음으로 취급
     const ms = d.length / this.rate * 1000;
     let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
     const rms = Math.sqrt(s / d.length);
@@ -261,7 +274,10 @@ class GeminiLive {
     this.src = this.ictx.createMediaStreamSource(this.stream);
     this.proc = this.ictx.createScriptProcessor(2048, 1, 1);   // 약 43ms 단위로 전송
     this.proc.onaudioprocess = e => {
-      const d = e.inputBuffer.getChannelData(0);
+      let d = e.inputBuffer.getChannelData(0);
+      const muted = echoMuted(this.pctx.currentTime < this.next);       // Gemini 음성 재생 중인지
+      if (muted !== this.muted) { this.muted = muted; this.h.onMute?.(muted); }
+      if (muted) d = new Float32Array(d.length);                          // 연결은 유지하되 무음을 전송
       let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
       this.h.onLevel(Math.min(1, Math.sqrt(s / d.length) * 6));
       if (!this.ws || this.ws.readyState !== 1) return;
@@ -366,6 +382,7 @@ function makeLiveHandlers(langKey) {
   };
   return {
     onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
+    onMute: m => { if (live) $('#micLabel').textContent = m ? '🔇 번역 재생 중 — 마이크 잠시 멈춤' : '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
       const c = open(); c.text += t; c.tr.textContent = c.text;
@@ -504,11 +521,12 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 // ---------- 설정 탭 ----------
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
-$('#liveModel').value = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
+$('#liveModel').value = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#muteOnPlay').checked = S.muteOnPlay; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
 $('#apiKey').onchange = e => S.apiKey = e.target.value;
 $('#model').onchange = e => S.customModel = e.target.value;
 $('#liveModel').onchange = e => S.liveModel = e.target.value || 'gemini-2.5-flash-native-audio-preview-12-2025';
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
+$('#muteOnPlay').onchange = e => S.muteOnPlay = e.target.checked;
 $('#autoSpeak').onchange = e => S.autoSpeak = e.target.checked;
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
