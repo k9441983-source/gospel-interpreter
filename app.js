@@ -19,8 +19,9 @@ const S = {
   set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
   get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
-  get muteOnPlay() { return localStorage.getItem('muteOnPlay') !== '0'; },
-  set muteOnPlay(v) { localStorage.setItem('muteOnPlay', v ? '1' : '0'); },
+  get echoMode() { return localStorage.getItem('echoMode') || 'smart'; },
+  set echoMode(v) { localStorage.setItem('echoMode', v); },
+  get muteOnPlay() { return this.echoMode !== 'off'; },
   get speed() { return localStorage.getItem('speed') || 'live'; },
   set speed(v) { localStorage.setItem('speed', v); },
   get model() { return this.customModel || (this.speed === 'accurate' ? 'gemini-2.5-flash' : 'gemini-2.5-flash-lite'); },
@@ -81,13 +82,14 @@ $('#stopBtn').onclick = () => TTS.stop();
 
 // ---------- 폰 스피커 소리가 마이크로 다시 들어가는 것 방지 ----------
 let lastEcho = -1e9;
-// 번역 소리(기기 음성 또는 Gemini 음성)가 나오는 동안과 직후 0.45초는 마이크 입력을 무시한다.
-function echoMuted(geminiPlaying) {
-  if (!S.muteOnPlay) return false;
+// 'playing' = 번역 소리가 나는 중, 'tail' = 끝난 직후 0.25초(잔향), 'none' = 소리 없음
+function echoState(geminiPlaying) {
   const now = performance.now();
-  if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending) lastEcho = now;
-  return now - lastEcho < 250;
+  if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending) { lastEcho = now; return 'playing'; }
+  return now - lastEcho < 250 ? 'tail' : 'none';
 }
+// 문장 단위 모드용: 설정이 꺼져 있지 않으면 번역 소리가 나는 동안 입력을 완전히 무시
+function echoMuted(geminiPlaying) { return S.muteOnPlay && echoState(geminiPlaying) !== 'none'; }
 
 // ---------- 오디오 유틸 ----------
 function downsample(buf, from, to) {
@@ -300,11 +302,23 @@ class GeminiLive {
   // 마이크 한 조각(약 43ms) 처리: 재생 중 차단 → 말 시작/끝 감지 → 전송
   frame(d) {
     const ms = d.length / this.ictx.sampleRate * 1000;
-    const muted = echoMuted(this.pctx.currentTime < this.next);             // 번역 음성 재생 중인지
-    if (muted !== this.muted) { this.muted = muted; this.h.onMute?.(muted); }
-    if (muted) d = new Float32Array(d.length);                                // 연결은 유지하되 무음 처리
     let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
-    const rms = Math.sqrt(s / d.length);
+    let rms = Math.sqrt(s / d.length);
+    // ── 폰 스피커의 번역 소리가 마이크로 다시 들어가는 것 방지 ──
+    const st = echoState(this.pctx.currentTime < this.next), em = S.echoMode;
+    const active = st !== 'none' && em !== 'off';
+    let gate = false;                                       // true → 이 조각은 에코로 보고 무음 처리
+    if (active) {
+      if (st === 'tail' || em === 'mute') gate = true;
+      else {                                                // 스마트: 에코 크기를 학습해서 그보다 확연히 큰 소리만 통과
+        if (!this.echoOn) { this.echoOn = true; this.echoT0 = performance.now(); this.echoLvl = 0; }
+        const grace = performance.now() - this.echoT0 < 300;          // 재생 시작 직후 0.3초는 에코가 커지는 구간이라 학습만
+        const over = !grace && rms > Math.max(0.03, this.echoLvl * 2.2);
+        if (!over) { this.echoLvl = grace ? Math.max(this.echoLvl * 0.7, rms) : this.echoLvl * 0.85 + rms * 0.15; gate = true; }
+      }
+    } else this.echoOn = false;
+    if (active !== this.muted) { this.muted = active; this.h.onMute?.(active, em); }
+    if (gate) { d = new Float32Array(d.length); rms = 0; }
     this.h.onLevel(Math.min(1, rms * 6));
     if (!this.ws || this.ws.readyState !== 1 || !this.ready) return;
     if (this.mode !== 'manual') return this.sendAudio(d);                    // 서버가 말 끝을 판단하는 모드
@@ -416,7 +430,7 @@ function makeLiveHandlers(langKey) {
   return {
     onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
     onStatus: s => { if (live) $('#micLabel').textContent = s || '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
-    onMute: m => { if (live) $('#micLabel').textContent = m ? '🔇 번역 재생 중 — 마이크 잠시 멈춤' : '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
+    onMute: (m, mode) => { if (live) $('#micLabel').textContent = m ? (mode === 'smart' ? '🔊 번역 재생 중 — 큰 목소리만 인식' : '🔇 번역 재생 중 — 마이크 잠시 멈춤') : '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onActivityEnd: () => { lastEnd = performance.now(); },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
@@ -556,12 +570,12 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 // ---------- 설정 탭 ----------
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
-$('#liveModel').value = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#muteOnPlay').checked = S.muteOnPlay; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
+$('#liveModel').value = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#echoMode').value = S.echoMode; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
 $('#apiKey').onchange = e => S.apiKey = e.target.value;
 $('#model').onchange = e => S.customModel = e.target.value;
 $('#liveModel').onchange = e => S.liveModel = e.target.value || 'gemini-2.5-flash-native-audio-preview-12-2025';
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
-$('#muteOnPlay').onchange = e => S.muteOnPlay = e.target.checked;
+$('#echoMode').onchange = e => S.echoMode = e.target.value;
 $('#autoSpeak').onchange = e => S.autoSpeak = e.target.checked;
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
