@@ -5,9 +5,9 @@ const LANGS = {
   english: {name: 'English', prompt: 'English', locale: 'en-US'},
   korean:  {name: '한국어', prompt: 'Korean (한국어)', locale: 'ko-KR'},
   hindi:   {name: 'हिन्दी (힌디어)', prompt: 'Hindi (देवनागरी script)', locale: 'hi-IN'},
-  both:    {name: '⇄ 양방향 (한국어·영어 ↔ 텔루구어)', prompt: 'Telugu or Korean (two-way)', locale: 'te-IN'},
+  both:    {name: '⇄ 양방향 (한국어·영어 ↔ 텔루구어, 텔루구어는 한국어+영어)', prompt: 'Telugu or Korean (two-way)', locale: 'te-IN'},
 };
-const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'}];
+const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'}, {id: 'telugu', label: '텔루구어'}];
 
 // ---------- 설정 ----------
 const S = {
@@ -189,6 +189,17 @@ ${numbered}`;
   if (!Array.isArray(out) || out.length !== texts.length) throw new Error('발음 변환 결과가 올바르지 않습니다.');
   return out;
 }
+
+// 텔루구어 → 영어 (양방향 모드에서 텔루구어로 말했을 때 한국어와 함께 영어도 보여 주기 위함)
+async function englishOf(text) {
+  const out = await gemini({
+    contents: [{parts: [{text: `Translate this Telugu into natural English. Return JSON {"english": "..."}.\n\n${text}`}]}],
+    generationConfig: {temperature: 0.1, responseMimeType: 'application/json',
+      responseSchema: {type: 'OBJECT', properties: {english: {type: 'STRING'}}, required: ['english']}},
+  });
+  return out.english || '';
+}
+const isTelugu = t => /[\u0C00-\u0C7F]/.test(t || '');
 
 // 구절별 발음 캐시
 const PCACHE = (() => {
@@ -396,14 +407,14 @@ function addEntry(r, langKey, secs) {
   entries.unshift({r, langKey});
   const el = document.createElement('div'); el.className = 'card';
   const mk = (cls, txt) => { const d = document.createElement('div'); d.className = cls; d.textContent = txt; return d; };
-  const pron = mk('pron', '');
+  const pron = mk('pron', ''), en = mk('en', '');
   el.append(mk('small', `인식된 말씀 · ⏱ ${secs.toFixed(1)}초`), mk('', r.transcript), document.createElement('hr'),
-    mk('tr', r.translation), pron);
+    mk('tr', r.translation), pron, en);
   const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 다시 듣기';
   b.onclick = () => { TTS.unlock(); TTS.speak(r.translation, langKey, $('#warn')); };
   el.append(b);
   $('#entries').prepend(el); renderHint();
-  return pron;
+  pron.en = en; return pron;
 }
 function setPhase(p) {
   $('#mic').classList.toggle('rec', p === 'live');
@@ -426,6 +437,8 @@ function onSegment(wav) {
     show($('#err'), '');
     const pron = addEntry(r, langKey, (performance.now() - t0) / 1000);
     if (S.autoSpeak) TTS.enqueue(r.translation, langKey, $('#warn'));   // 낭독을 먼저 시작
+    if (langKey === 'both' && isTelugu(r.transcript))                    // 텔루구어로 말함 → 영어 번역도 추가
+      englishOf(r.transcript).then(t => { if (t) pron.en.textContent = '🇬🇧 ' + t; }).catch(() => {});
     const outLang = scriptLang(r.translation, langKey);
     if (S.showPron && outLang !== 'korean')                              // 한글 발음은 뒤따라 채움
       koreanPronunciation([r.translation], outLang).then(o => pron.textContent = o[0]).catch(() => {});
@@ -439,12 +452,12 @@ function makeLiveHandlers(langKey) {
     const el = document.createElement('div'); el.className = 'card';
     const mk = (cls) => { const d = document.createElement('div'); d.className = cls; return d; };
     const head = mk('small'); head.textContent = '인식된 말씀 (실시간)';
-    const inp = mk(''), hr = document.createElement('hr'), tr = mk('tr'), pron = mk('pron');
-    el.append(head, inp, hr, tr, pron);
+    const inp = mk(''), hr = document.createElement('hr'), tr = mk('tr'), pron = mk('pron'), en = mk('en');
+    el.append(head, inp, hr, tr, pron, en);
     const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 기기 음성으로 다시 듣기';
     b.onclick = () => { TTS.unlock(); TTS.speak(tr.textContent, langKey, $('#warn')); };
     el.append(b); $('#entries').prepend(el); renderHint();
-    return card = {inp, tr, pron, head, text: ''};
+    return card = {inp, tr, pron, en, head, text: ''};
   };
   return {
     onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
@@ -460,6 +473,8 @@ function makeLiveHandlers(langKey) {
       const c = card; card = null; if (!c) return;
       if (!c.text.trim()) { c.tr.parentElement.remove(); return; }
       if (!S.geminiVoice && S.autoSpeak) TTS.enqueue(c.text, langKey, $('#warn'));
+      if (langKey === 'both' && isTelugu(c.inp.textContent))               // 텔루구어로 말함 → 영어 번역도 추가
+        englishOf(c.inp.textContent).then(t => { if (t) c.en.textContent = '🇬🇧 ' + t; }).catch(() => {});
       const outLang = scriptLang(c.text, langKey);
       if (S.showPron && outLang !== 'korean')
         koreanPronunciation([c.text], outLang).then(o => c.pron.textContent = o[0]).catch(() => {});
@@ -562,7 +577,8 @@ async function renderBible() {
   const n = Math.max(pv.length, curTe.length);
   for (let i = 0; i < n; i++) {
     if (!pv[i] && !curTe[i]) continue;
-    const d = document.createElement('div'); d.className = 'v';
+    const teOnly = B.primary === 'telugu';                       // 텔루구어 단독 보기: 본문을 한 번만 표시하고 아래에 한글 발음
+    const d = document.createElement('div'); d.className = 'v' + (teOnly ? ' teonly' : '');
     const p = document.createElement('div');
     const num = document.createElement('span'); num.className = 'n'; num.textContent = i + 1;
     p.append(num, pv[i] || ''); d.append(p);
@@ -572,7 +588,7 @@ async function renderBible() {
       pr.textContent = S.showPron ? (PCACHE.get(curTe[i]) || '') : '';
       const b = document.createElement('button'); b.textContent = '🔊 텔루구어로 듣기';
       b.onclick = () => { TTS.unlock(); TTS.speak(curTe[i], 'telugu', $('#bwarn')); };
-      d.append(t, pr, b);
+      if (teOnly) d.append(pr, b); else d.append(t, pr, b);
     }
     box.append(d);
   }
