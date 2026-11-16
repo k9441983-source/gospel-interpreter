@@ -339,6 +339,18 @@ $('#model').onchange = e => S.model = e.target.value || 'gemini-2.5-flash';
 $('#autoSpeak').onchange = e => S.autoSpeak = e.target.checked;
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
+$('#testKey').onclick = async () => {
+  const out = $('#keyResult'); out.textContent = '확인 중…';
+  S.apiKey = $('#apiKey').value; S.model = $('#model').value || 'gemini-2.5-flash';
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.model)}:generateContent`, {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
+      body: JSON.stringify({contents: [{parts: [{text: 'Say OK'}]}]}),
+    });
+    const d = await r.json().catch(() => ({}));
+    out.textContent = r.ok ? '✅ 연결 성공 (키·모델 정상)' : `❌ 오류 ${r.status}: ${d.error?.message || ''}`;
+  } catch (e) { out.textContent = '❌ 네트워크 오류: ' + e.message; }
+};
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
