@@ -183,3 +183,6 @@ html.lite #mic.rec::after{display:none}
 .card[data-dir=in] .pron{display:none}
 .card[data-dir=out] .tr{font-size:20px;opacity:.9}
 .card[data-dir=out]>div:not([class]){font-size:17px;color:var(--fg)}
+.mini{border:0;border-radius:999px;padding:4px 10px;background:var(--acc-soft);color:var(--acc-ink);font-size:12px;font-weight:650;cursor:pointer}
+.micname{margin-top:8px;min-height:16px;font-weight:600}
+.micname:empty{display:none}

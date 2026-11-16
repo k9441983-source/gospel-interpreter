@@ -20,6 +20,10 @@ const S = {
   set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
   get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
+  get micId() { return localStorage.getItem('micId') || ''; },
+  set micId(v) { if (v) localStorage.setItem('micId', v); else localStorage.removeItem('micId'); },
+  get micLabel() { return localStorage.getItem('micLabel') || ''; },
+  set micLabel(v) { if (v) localStorage.setItem('micLabel', v); else localStorage.removeItem('micLabel'); },
   get callMode() { return localStorage.getItem('callMode') === '1'; },
   set callMode(v) { localStorage.setItem('callMode', v ? '1' : '0'); },
   get callReadKorean() { return localStorage.getItem('callReadKorean') === '1'; },
@@ -74,6 +78,7 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
   if (b.dataset.tab === 'bible') renderBible();
+  if (b.dataset.tab === 'settings') refreshMics(false);
 });
 
 // ---------- 음성 합성 (TTS) ----------
@@ -189,6 +194,31 @@ const TTS = {
 if ('speechSynthesis' in window) { TTS.load(); speechSynthesis.onvoiceschanged = () => TTS.load(); }
 $('#stopBtn').onclick = () => TTS.stop();
 
+// ---------- 마이크 선택 (블루투스 스피커의 마이크 대신 폰·유선 마이크를 쓰기 위함) ----------
+async function getMic() {
+  const base = {echoCancellation: true, noiseSuppression: true, autoGainControl: true};
+  let stream;
+  if (S.micId) {
+    try { stream = await navigator.mediaDevices.getUserMedia({audio: {...base, deviceId: {exact: S.micId}}}); }
+    catch (e) { if (e.name === 'NotAllowedError') throw e; S.micId = ''; S.micLabel = ''; show($('#warn'), '선택한 마이크를 찾지 못해 기본 마이크를 사용합니다.'); }   // 장치가 사라짐 → 기본 마이크
+  }
+  stream ||= await navigator.mediaDevices.getUserMedia({audio: base});
+  const t = stream.getAudioTracks()[0]; $('#micName').textContent = t ? '🎙 ' + (t.label || '기본 마이크') : '';
+  if (S.micId && t?.label) S.micLabel = t.label;
+  return stream;
+}
+async function refreshMics(ask) {
+  const sel = $('#micSel'); if (!sel || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    if (ask) { const s = await navigator.mediaDevices.getUserMedia({audio: true}); s.getTracks().forEach(t => t.stop()); }   // 권한을 받아야 장치 이름이 보임
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId);
+    sel.innerHTML = ''; sel.add(new Option('자동 (기기 기본)', ''));
+    devs.forEach(d => sel.add(new Option(d.label || '마이크 (이름은 권한 허용 후 표시)', d.deviceId)));
+    if (S.micId && ![...sel.options].some(o => o.value === S.micId))        // 권한 확인 전에는 장치 식별자가 안 보이므로, 저장해 둔 마이크를 표시용으로 남김
+      sel.add(new Option((S.micLabel || '저장된 마이크') + ' (연결 확인 전)', S.micId));
+    sel.value = S.micId || '';
+  } catch (e) { show($('#swarn'), '마이크 목록을 가져오지 못했습니다: ' + e.message); }
+}
 // ---------- 폰 스피커 소리가 마이크로 다시 들어가는 것 방지 ----------
 let lastEcho = -1e9;
 // 'playing' = 번역 소리가 나는 중, 'tail' = 끝난 직후 0.25초(잔향), 'none' = 소리 없음
@@ -367,7 +397,7 @@ const PCACHE = (() => {
 class Live {
   constructor(onSegment, onLevel) { this.onSegment = onSegment; this.onLevel = onLevel; }
   async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    this.stream = await getMic();
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AC(); if (this.ctx.state === 'suspended') await this.ctx.resume();
     this.rate = this.ctx.sampleRate;
@@ -462,7 +492,7 @@ class GeminiLive {
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000});         // 입력(마이크)·출력(Gemini 음성) 분리
     await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
-    this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    this.stream = await getMic();
     this.pre = []; this.speaking = false; this.noise = 0.008; this.silMs = 0; this.segMs = 0;
     let lastErr;
     const tryModes = async () => {
@@ -603,7 +633,7 @@ function setPhase(p) {
   document.documentElement.classList.toggle('live-lite', p === 'live');       // 통역 중에는 화면 효과를 줄여 부드럽게 (끝나면 원래대로)
   $('#micLabel').textContent = p === 'live' ? (S.speed === 'live' ? 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)' : '실시간 통역 중… 멈추려면 누르세요') : '눌러서 실시간 통역 시작';
   $('#meter').hidden = p !== 'live';
-  if (p !== 'live') { lvlV = 0; lvlT = 0; setLevel(0); const r = document.querySelector('#micRing'); r.style.transform = 'scale(1)'; r.style.opacity = '0'; (meterBar ||= document.querySelector('#meter i')).style.transform = 'scaleX(0)'; }
+  if (p !== 'live') { $('#micName').textContent = ''; lvlV = 0; lvlT = 0; setLevel(0); const r = document.querySelector('#micRing'); r.style.transform = 'scale(1)'; r.style.opacity = '0'; (meterBar ||= document.querySelector('#meter i')).style.transform = 'scaleX(0)'; }
   $('#mic').dataset.phase = p;
 }
 function status() {
@@ -875,12 +905,13 @@ function applyLite() { document.documentElement.classList.toggle('lite', S.lite 
 })();
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v23';
+const APP_VERSION = 'v24';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
   box.hidden = false; $('#copyDiag').hidden = false; log(null, `앱 버전 ${APP_VERSION} · ${(navigator.userAgent.match(/OS [\d_]+/) || [''])[0]}`);
   if (!S.apiKey) return log(false, 'API 키가 비어 있습니다');
+  try { const ds = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); log(null, `마이크 ${ds.length}개: ${ds.map(d => d.label || '(이름 없음)').join(' / ')} · 선택: ${S.micId ? (ds.find(d => d.deviceId === S.micId)?.label || '저장된 장치') : '자동'}`); } catch {}
   log(null, `API 키 ${S.apiKey.slice(0, 4)}… (${S.apiKey.length}자)`);
   const base = 'https://generativelanguage.googleapis.com/v1beta/', hdr = {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey};
   const call = async (url, init) => { try { const r = await fetch(url, init); const d = await r.json().catch(() => ({})); return {r, d}; } catch (e) { return {err: e.message}; } };
@@ -928,6 +959,9 @@ $('#echoMode').onchange = e => S.echoMode = e.target.value;
 $('#autoSpeak').onchange = e => setSpeak(e.target.checked);
 $('#callMode').onchange = e => setCall(e.target.checked);
 $('#callReadKorean').checked = S.callReadKorean; $('#callReadKorean').onchange = e => S.callReadKorean = e.target.checked;
+$('#micSel').onchange = e => { S.micId = e.target.value; S.micLabel = e.target.value ? e.target.selectedOptions[0].textContent.replace(/ \(연결 확인 전\)$/, '') : ''; };
+$('#refreshMic').onclick = () => refreshMics(true);
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => refreshMics(false));
 $('#lite').onchange = e => { S.lite = e.target.checked; S.liteAuto = false; applyLite(); };
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
