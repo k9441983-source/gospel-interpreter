@@ -195,3 +195,5 @@ html.lite #mic.rec::after{display:none}
 .toast{position:fixed;z-index:60;left:50%;top:calc(10px + env(safe-area-inset-top));transform:translateX(-50%);max-width:calc(100% - 28px);padding:11px 16px;border-radius:999px;font-size:13.5px;font-weight:650;line-height:1.45;text-align:center;box-shadow:0 12px 30px -10px rgba(15,23,42,.45);animation:fade .2s ease;pointer-events:none}
 .toast.info{background:#1e293b;color:#fff}.toast.ok{background:#15803d;color:#fff}.toast.warn{background:#b45309;color:#fff;border-radius:18px}
 #playChapter.busy{background:var(--acc-soft);color:var(--acc-ink);box-shadow:none}
+.dlrow .btn{flex:1;font-size:13px;padding:10px 8px}
+.dlrow .btn[data-state=full]{color:#15803d}

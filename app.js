@@ -80,7 +80,7 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
   if (b.dataset.tab === 'bible') renderBible();
-  if (b.dataset.tab === 'settings') refreshMics(false);
+  if (b.dataset.tab === 'settings') { refreshMics(false); updateStoreInfo(); }
 });
 
 // ---------- 음성 합성 (TTS) ----------
@@ -148,6 +148,64 @@ async function geminiTTS(text, attempt = 0, notify = true) {
   }
   throw lastErr || new Error('음성 생성 실패');
 }
+// ---------- 저장된 음성: 한 번 만든 음성은 폰(IndexedDB)에 저장해 두고 다음부터 바로 재생 · 미리 받기 ----------
+const ADPCM_STEP = [7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767];
+const ADPCM_IDX = [-1, -1, -1, -1, 2, 4, 6, 8];
+const clamp16 = v => v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+// IMA ADPCM: 16비트 → 4비트 (용량 1/4, 말소리에는 충분한 품질)
+function adpcmEncode(f32) {
+  const n = f32.length, out = new Uint8Array((n + 1) >> 1), s0 = clamp16(Math.round(f32[0] * 32767)); let pred = s0, idx = 0;
+  for (let i = 0; i < n; i++) {
+    const smp = clamp16(Math.round(f32[i] * 32767)); let diff = smp - pred, code = 0, step = ADPCM_STEP[idx], vp = step >> 3;
+    if (diff < 0) { code = 8; diff = -diff; }
+    if (diff >= step) { code |= 4; diff -= step; vp += step; } step >>= 1;
+    if (diff >= step) { code |= 2; diff -= step; vp += step; } step >>= 1;
+    if (diff >= step) { code |= 1; vp += step; }
+    pred = clamp16(code & 8 ? pred - vp : pred + vp); idx = Math.max(0, Math.min(88, idx + ADPCM_IDX[code & 7]));
+    if (i & 1) out[i >> 1] |= code << 4; else out[i >> 1] = code;
+  }
+  return {n, p0: s0, data: out.buffer};
+}
+function adpcmDecode(rec) {
+  const d = new Uint8Array(rec.data), f = new Float32Array(rec.n); let pred = rec.p0, idx = 0;
+  for (let i = 0; i < rec.n; i++) {
+    const code = i & 1 ? d[i >> 1] >> 4 : d[i >> 1] & 15, step = ADPCM_STEP[idx]; let vp = step >> 3;
+    if (code & 4) vp += step; if (code & 2) vp += step >> 1; if (code & 1) vp += step >> 2;
+    pred = clamp16(code & 8 ? pred - vp : pred + vp); idx = Math.max(0, Math.min(88, idx + ADPCM_IDX[code & 7])); f[i] = pred / 32768;
+  }
+  return {samples: f, rate: rec.rate};
+}
+const AudioDB = {
+  db: null, saves: 0, warned: false,
+  open() { return this.db ||= new Promise((res, rej) => { if (!window.indexedDB) return rej(new Error('이 브라우저는 저장을 지원하지 않아요')); const r = indexedDB.open('gospel-audio', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('tts', {keyPath: 'k'}); r.result.createObjectStore('meta', {keyPath: 'k'}); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async tx(stores, mode, fn) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction(stores, mode); let out; const rq = fn(...[].concat(stores).map(s => t.objectStore(s))); if (rq) rq.onsuccess = () => { out = rq.result; }; t.oncomplete = () => res(out); t.onerror = t.onabort = () => rej(t.error); }); },
+  get(k) { return this.tx('tts', 'readonly', s => s.get(k)); },
+  async has(k) { try { return !!(await this.tx('meta', 'readonly', s => s.getKey(k))); } catch { return false; } },
+  async save(k, pcm) {                                        // 저장 실패(용량 부족 등)는 재생에 영향 주지 않음
+    try {
+      const e = adpcmEncode(pcm.samples), rec = {k, rate: pcm.rate, n: e.n, p0: e.p0, data: e.data};
+      await this.tx(['tts', 'meta'], 'readwrite', (s, m) => { m.put({k, b: e.data.byteLength, t: Date.now()}); return s.put(rec); });
+      if (++this.saves % 8 === 0) this.prune(+(window.__dbMax || 400e6));
+    } catch (e) { if (!this.warned) { this.warned = true; toast('저장 공간이 부족해서 음성을 저장하지 못했어요 (재생은 정상)', 'warn', 4000); } }
+  },
+  async stats() { try { const all = await this.tx('meta', 'readonly', m => m.getAll()); return {n: all.length, bytes: all.reduce((a, x) => a + x.b, 0)}; } catch { return {n: 0, bytes: 0}; } },
+  async clear() { await this.tx(['tts', 'meta'], 'readwrite', (s, m) => { m.clear(); return s.clear(); }); },
+  async prune(max) {                                          // 너무 커지면 오래된 것부터 지움
+    try { const all = (await this.tx('meta', 'readonly', m => m.getAll())).sort((a, b) => a.t - b.t); let tot = all.reduce((a, x) => a + x.b, 0);
+      for (const x of all) { if (tot <= max) break; await this.tx(['tts', 'meta'], 'readwrite', (s, m) => { m.delete(x.k); return s.delete(x.k); }); tot -= x.b; } } catch {}
+  },
+};
+// 성경 낭독 구간 나누기: 첫 구절은 단독(빨리 시작), 이후 4구절(약 600자)씩. 낭독과 미리 받기가 같은 방식이어야 저장본을 재사용함
+function ttsGroups(items) {
+  if (!items.length) return [];
+  const groups = [[items[0]]]; let cur = [], len = 0;
+  for (const t of items.slice(1)) { if (cur.length && (cur.length >= 4 || len + t.length > 600)) { groups.push(cur); cur = []; len = 0; } cur.push(t); len += t.length; }
+  if (cur.length) groups.push(cur);
+  return groups;
+}
+const groupKey = g => S.gvoice + '|' + g.join('\n\n');
+
 const GT = {
   ctx: null, gen: 0, next: 0, srcs: [], cache: new Map(), loops: 0, silent: null, down: 0,
   ensure() {
@@ -165,7 +223,7 @@ const GT = {
     return ctx.state === 'running';
   },
   active() { return !!this.ctx && this.ctx.currentTime < this.next; },
-  idleUI() { if (!this.active() && !this.loops) { setPlayUI('idle'); try { this.silent?.pause(); } catch {} if (!speechSynthesis.speaking) $('#stopBtn').hidden = true; } },
+  idleUI() { if (!this.active() && !this.loops) { setPlayUI('idle'); try { refreshDl(); } catch {} try { this.silent?.pause(); } catch {} if (!speechSynthesis.speaking) $('#stopBtn').hidden = true; } },
   flush() { this.gen++; this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; try { this.silent?.pause(); } catch {} setPlayUI('idle'); },
   schedule(pcm) {
     const ctx = this.ensure(), buf = ctx.createBuffer(1, pcm.samples.length, pcm.rate); buf.getChannelData(0).set(pcm.samples);
@@ -173,19 +231,24 @@ const GT = {
     const t = Math.max(ctx.currentTime + 0.05, this.next); src.start(t); this.next = t + buf.duration; this.srcs.push(src);
     src.onended = () => { this.srcs = this.srcs.filter(x => x !== src); this.idleUI(); };
   },
-  fetch(text) {                                                     // 같은 문장은 다시 요청하지 않음
+  fetch(text) {                                                     // 같은 문장은 다시 요청하지 않음: 메모리 → 폰에 저장된 것 → 새로 만들기(만든 뒤 저장)
     const k = S.gvoice + '|' + text;
-    if (!this.cache.has(k)) { this.cache.set(k, geminiTTS(text).catch(e => { this.cache.delete(k); throw e; })); if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value); }
+    if (!this.cache.has(k)) {
+      const p = (async () => {
+        try { const hit = await AudioDB.get(k); if (hit) return adpcmDecode(hit); } catch {}
+        const pcm = await geminiTTS(text); AudioDB.save(k, pcm); return pcm;
+      })().catch(e => { this.cache.delete(k); throw e; });
+      this.cache.set(k, p); if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value);
+    }
     return this.cache.get(k);
   },
-  async enqueue(texts, langKey, warnEl) {
+  async enqueue(texts, langKey, warnEl, opts = {}) {
     const gen = this.gen, items = [].concat(texts).filter(t => t && t.trim());
     if (!items.length) return;
     if (Date.now() < this.down) { toast(this.downWhy, 'warn', 4000); return TTS.deviceEnqueue(items, langKey, warnEl); }    // 이 키는 음성합성을 못 쓰는 상태 → 바로 기기 음성
-    const groups = [[items[0]]]; let cur = [], len = 0;            // 첫 문장은 단독으로(빨리 시작), 이후 4문장(약 600자)씩 묶음
-    for (const t of items.slice(1)) { if (cur.length && (cur.length >= 4 || len + t.length > 600)) { groups.push(cur); cur = []; len = 0; } cur.push(t); len += t.length; }
-    if (cur.length) groups.push(cur);
-    $('#stopBtn').hidden = false; show(warnEl, ''); setPlayUI('loading'); toast('⏳ 목소리 만드는 중… (몇 초 걸려요)', 'info', 0);
+    const groups = opts.groups || ttsGroups(items);
+    $('#stopBtn').hidden = false; show(warnEl, '');
+    const loadT = setTimeout(() => { setPlayUI('loading'); toast('⏳ 목소리 만드는 중… (몇 초 걸려요)', 'info', 0); }, 200);   // 저장된 음성은 바로 재생되므로 이 표시가 뜨지 않음
     this.loops++; let playedAny = false, fails = 0;
     try {
       let next = this.fetch(groups[0].join('\n\n')); next.catch(() => {});
@@ -214,9 +277,9 @@ const GT = {
           continue;
         }
         fails = 0; this.schedule(pcm);
-        if (!playedAny) { playedAny = true; setPlayUI('playing'); toast('🔊 재생 중', 'ok', 1500); }
+        if (!playedAny) { playedAny = true; clearTimeout(loadT); setPlayUI('playing'); toast('🔊 재생 중', 'ok', 1500); }
       }
-    } finally { this.loops--; if (gen === this.gen) { if (!this.active() && !speechSynthesis.speaking) { setPlayUI('idle'); toastHide(); } } }
+    } finally { clearTimeout(loadT); this.loops--; if (gen === this.gen) { if (!this.active() && !speechSynthesis.speaking) { setPlayUI('idle'); toastHide(); } } }
   },
 };
 // 성경 화면 버튼 상태: 눌렀는데 반응이 없는 것처럼 보이지 않게
@@ -239,10 +302,10 @@ const TTS = {
     if (m.length) return m.find(v => /enhanced|premium/i.test(v.name)) || m[0];
     return this.voices.find(v => v.lang.toLowerCase().startsWith(lang.slice(0, 2))) || null;
   },
-  speak(texts, langKey, warnEl) { speechSynthesis.cancel(); GT.flush(); this.enqueue(texts, langKey, warnEl); },
+  speak(texts, langKey, warnEl, opts) { speechSynthesis.cancel(); GT.flush(); this.enqueue(texts, langKey, warnEl, opts); },
   // 진행 중인 낭독을 끊지 않고 뒤에 이어 붙임 (실시간 통역용)
-  enqueue(texts, langKey, warnEl) {
-    if (S.voiceEngine === 'gemini' && S.apiKey) return GT.enqueue(texts, langKey, warnEl);   // 기본: Gemini 음성
+  enqueue(texts, langKey, warnEl, opts) {
+    if (S.voiceEngine === 'gemini' && S.apiKey) return GT.enqueue(texts, langKey, warnEl, opts);   // 기본: Gemini 음성
     return this.deviceEnqueue(texts, langKey, warnEl);
   },
   deviceEnqueue(texts, langKey, warnEl) {
@@ -918,6 +981,58 @@ $('#callToggle').onclick = () => setCall(!S.callMode);
 const speedSel = $('#speed'); speedSel.value = S.speed; speedSel.onchange = () => { S.speed = speedSel.value; };
 renderHint();
 
+async function playVerse(i) {
+  TTS.unlock();
+  const v = curTe[i], g = ttsGroups(curTe.filter(t => t && t.trim())).find(g => g.includes(v));
+  if (g && g.length > 1 && await AudioDB.has(groupKey(g))) return TTS.speak(g, 'telugu', $('#bwarn'), {groups: [g]});   // 저장된 구간이면 그 구간(최대 4구절)을 바로 재생
+  TTS.speak(v, 'telugu', $('#bwarn'));
+}
+// ---------- 미리 받기 (장·책 단위) ----------
+const DL = {running: false, cancel: false};
+async function downloadVerses(verses, onTick) {
+  const texts = ttsGroups(verses.filter(t => t && t.trim())).map(g => g.join('\n\n')), todo = []; let done = 0, failed = 0, hard = false;
+  for (const t of texts) { if (await AudioDB.has(S.gvoice + '|' + t)) done++; else todo.push(t); }
+  onTick(done, texts.length); let i = 0;
+  const worker = async () => {
+    while (i < todo.length && !DL.cancel && !hard) {
+      const t = todo[i++];
+      try { await GT.fetch(t); done++; } catch (e) { if (e.hard) hard = true; failed++; }
+      onTick(done, texts.length);
+    }
+  };
+  await Promise.all([worker(), worker()]);                      // 동시에 2개씩 (사용량 제한을 넘지 않게)
+  return {done, total: texts.length, failed, hard};
+}
+async function refreshDl() {                                    // 이 장이 이미 저장되었는지 표시
+  const b = $('#dlChapter'); if (!b || DL.running) return;
+  const texts = ttsGroups(curTe.filter(t => t && t.trim())).map(g => g.join('\n\n'));
+  if (!texts.length) { b.textContent = '⬇ 이 장 미리 받기'; return; }
+  let n = 0; for (const t of texts) if (await AudioDB.has(S.gvoice + '|' + t)) n++;
+  b.dataset.state = n === texts.length ? 'full' : n ? 'part' : 'none';
+  b.textContent = n === texts.length ? '✓ 저장됨 (바로 재생)' : n ? `⬇ 이어서 받기 (${n}/${texts.length})` : '⬇ 이 장 미리 받기';
+}
+async function updateStoreInfo() {
+  const el = $('#storeInfo'); if (!el) return; const s = await AudioDB.stats();
+  el.textContent = s.n ? `저장된 음성 ${s.n}개 · 약 ${(s.bytes / 1e6).toFixed(1)}MB` : '저장된 음성이 없어요';
+}
+async function runDownload(kind) {
+  if (DL.running) { DL.cancel = true; toast('중지하는 중… 받은 부분은 저장돼요', 'info', 2500); return; }
+  if (!S.apiKey) return toast('설정에서 API 키를 먼저 입력해 주세요', 'warn');
+  const cb = $('#dlChapter'), bb = $('#dlBook');
+  if (kind === 'chapter' && !curTe.some(t => t && t.trim())) return toast('본문을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요', 'warn');
+  DL.running = true; DL.cancel = false; try { navigator.storage?.persist?.(); } catch {}
+  let failed = 0, hard = false, total = 0, done = 0; const label = kind === 'chapter' ? cb : bb;
+  try {
+    const chapters = kind === 'chapter' ? [curTe] : (await loadBook('telugu', B.book)).filter(c => c && c.length);
+    for (let c = 0; c < chapters.length && !DL.cancel && !hard; c++) {
+      const r = await downloadVerses(chapters[c], (d, t) => { label.textContent = `⏳ ${kind === 'book' ? `${c + 1}/${chapters.length}장 · ` : ''}${d}/${t} 받는 중 (누르면 중지)`; });
+      failed += r.failed; hard ||= r.hard; total += r.total; done += r.done;
+    }
+  } catch (e) { failed++; toast('받기 실패: ' + e.message.slice(0, 100), 'warn', 5000); }
+  const cancelled = DL.cancel; DL.running = false; DL.cancel = false;
+  toast(hard ? 'Gemini 음성 사용 한도에 걸려 멈췄어요. 받은 부분은 저장됐어요 (한도가 풀리면 이어서 받을 수 있어요)' : failed ? `${failed}개 구간을 받지 못했어요. 다시 누르면 이어서 받아요` : cancelled ? '중지했어요. 받은 부분은 저장됐어요' : '✓ 저장 완료! 이제 바로 재생돼요', hard || failed ? 'warn' : 'ok', 6000);
+  bb.textContent = '📚 이 책 전체 받기'; await refreshDl(); updateStoreInfo();
+}
 // ---------- 성경 탭 ----------
 const bibleIdx = {}, bookCache = {};
 const B = {primary: 'nkjv', book: 42, chapter: 2, token: 0};
@@ -988,13 +1103,14 @@ async function renderBible() {
       const pr = document.createElement('div'); pr.className = 'pr'; pr.dataset.te = curTe[i];
       pr.textContent = S.showPron ? (PCACHE.get(curTe[i]) || '') : '';
       const b = document.createElement('button'); b.textContent = '🔊 텔루구어로 듣기';
-      b.onclick = () => { TTS.unlock(); TTS.speak(curTe[i], 'telugu', $('#bwarn')); };
+      b.onclick = () => playVerse(i);
       if (teOnly) d.append(pr, b); else d.append(t, pr, b);
     }
     box.append(d);
   }
   if (!box.children.length) box.innerHTML = '<p class="small">이 장의 데이터가 없습니다.</p>';
   $('.tab.active').scrollTop = 0;
+  refreshDl();
   if (S.showPron) fillPron(token);
 }
 // 한 요청이 400으로 실패하면 반으로 나눠 다시 시도해서, 문제가 되는 절 하나 때문에 나머지가 막히지 않게 함
@@ -1028,6 +1144,12 @@ async function fillPron(token) {
   } catch (e) { if (token === B.token) show($('#berr'), e.message); }
   $('#pronSpin').hidden = true;
 }
+$('#dlChapter').onclick = () => runDownload('chapter');
+$('#dlBook').onclick = () => runDownload('book');
+$('#clearStore').onclick = async () => {
+  if (!confirm('저장된 음성을 모두 지울까요? 다시 들으려면 새로 만들어야 해요.')) return;
+  await AudioDB.clear(); GT.cache.clear(); updateStoreInfo(); refreshDl(); toast('저장된 음성을 지웠어요', 'ok', 2500);
+};
 $('#playChapter').onclick = () => {
   TTS.unlock();
   if (!curTe.some(t => t && t.trim())) { toast('본문을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요', 'warn', 3500); return; }   // 반응 없이 끝나지 않도록
@@ -1102,7 +1224,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -1153,7 +1275,7 @@ $('#liveModel').value = localStorage.getItem('liveModel') || ''; $('#liveModel')
 $('#apiKey').onchange = e => { S.apiKey = e.target.value; discoverModels(true).then(renderModelInfo); };
 $('#model').onchange = e => S.customModel = e.target.value;
 $('#voiceEngine').onchange = e => S.voiceEngine = e.target.value;
-$('#gvoice').onchange = e => S.gvoice = e.target.value;
+$('#gvoice').onchange = e => { S.gvoice = e.target.value; refreshDl(); };
 $('#pitch').oninput = e => S.pitch = parseFloat(e.target.value);
 $('#liveModel').onchange = e => { if (e.target.value.trim()) S.liveModel = e.target.value; else localStorage.removeItem('liveModel'); renderModelInfo(); };
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
@@ -1182,7 +1304,7 @@ $('#runDiag').onclick = () => runDiag();
 $('#copyDiag').onclick = async () => { try { await navigator.clipboard.writeText($('#diag').textContent); $('#copyDiag').textContent = '복사됨 ✓'; } catch { $('#copyDiag').textContent = '길게 눌러 직접 복사하세요'; } };
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
-$('#appVer').textContent = APP_VERSION; applyLite(); renderCall(); renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
+$('#appVer').textContent = APP_VERSION; applyLite(); updateStoreInfo(); renderCall(); renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   const had = !!navigator.serviceWorker.controller; let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !reloaded && !live) { reloaded = true; location.reload(); } });   // 새 버전이 설치되면 자동으로 새로고침 (통역 중에는 제외)
