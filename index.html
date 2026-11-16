@@ -78,6 +78,11 @@
       <label class="field"><span class="lbl">마이크 <button id="refreshMic" type="button" class="mini">목록 새로고침</button></span>
         <select id="micSel"><option value="">자동 (기기 기본)</option></select>
         <small>블루투스 스피커를 연결하면 스피커의 마이크로 바뀌어 소리가 작아지고 번역 음성이 전화 음질이 될 수 있어요. 여기서 <b>iPhone 마이크</b>나 유선 마이크를 고르세요. 통역 화면 아래에 지금 쓰는 마이크가 표시됩니다.</small></label>
+      <label class="field"><span class="lbl">마이크 처리</span>
+        <select id="micProc"><option value="all">기본 — 에코·잡음 제거·자동 볼륨</option><option value="echo">에코만 제거 (잡음 제거·자동 볼륨 끔)</option><option value="raw">원음 (모두 끔)</option></select>
+        <small>한국어가 잘못 인식되면 바꿔 가며 아래 <b>마이크 시험</b>으로 비교해 보세요. 잡음 제거가 목소리를 뭉개는 경우가 있어요.</small></label>
+      <button id="micTestBtn" class="btn wide" type="button">🎤 마이크 시험 (4초 녹음 → 분석 → 다시 듣기)</button>
+      <div id="micTestOut" class="mtest" hidden></div>
       <label class="field"><span class="lbl">번역 소리가 나는 동안 마이크</span>
         <select id="echoMode"><option value="smart">스마트 — 번역 소리는 걸러내고 큰 목소리만 인식 (추천)</option><option value="mute">완전 차단 — 번역 소리가 끝날 때까지 안 들음</option><option value="off">끄기 — 이어폰 사용 시</option></select>
         <small>폰 스피커의 번역 소리가 다시 인식되는 것을 막습니다.</small></label>

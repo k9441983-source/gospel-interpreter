@@ -186,3 +186,7 @@ html.lite #mic.rec::after{display:none}
 .mini{border:0;border-radius:999px;padding:4px 10px;background:var(--acc-soft);color:var(--acc-ink);font-size:12px;font-weight:650;cursor:pointer}
 .micname{margin-top:8px;min-height:16px;font-weight:600}
 .micname:empty{display:none}
+.mtest{font-size:13.5px;line-height:1.6}
+.mtest>div{margin:6px 0}.mtest audio{width:100%;margin:8px 0}
+.mtest .good{color:#15803d}.mtest .warn{color:var(--warn-fg);background:var(--warn-bg);padding:6px 10px;border-radius:10px}.mtest .bad{color:var(--err-fg);background:var(--err-bg);padding:6px 10px;border-radius:10px}.mtest .tip{color:var(--muted)}
+@media(prefers-color-scheme:dark){.mtest .good{color:#6ee7a0}}

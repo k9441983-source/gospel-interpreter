@@ -20,6 +20,8 @@ const S = {
   set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
   get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
+  get micProc() { return localStorage.getItem('micProc') || 'all'; },
+  set micProc(v) { localStorage.setItem('micProc', v); },
   get micId() { return localStorage.getItem('micId') || ''; },
   set micId(v) { if (v) localStorage.setItem('micId', v); else localStorage.removeItem('micId'); },
   get micLabel() { return localStorage.getItem('micLabel') || ''; },
@@ -196,7 +198,8 @@ $('#stopBtn').onclick = () => TTS.stop();
 
 // ---------- 마이크 선택 (블루투스 스피커의 마이크 대신 폰·유선 마이크를 쓰기 위함) ----------
 async function getMic() {
-  const base = {echoCancellation: true, noiseSuppression: true, autoGainControl: true};
+  const proc = S.micProc;       // all: 에코·잡음·자동볼륨 모두 / echo: 에코만 / raw: 모두 끔(원음)
+  const base = {echoCancellation: proc !== 'raw', noiseSuppression: proc === 'all', autoGainControl: proc === 'all'};
   let stream;
   if (S.micId) {
     try { stream = await navigator.mediaDevices.getUserMedia({audio: {...base, deviceId: {exact: S.micId}}}); }
@@ -299,9 +302,10 @@ function renderModelInfo() {
   el.textContent = `사용 중인 모델 — 빠름: ${S.speed === 'accurate' && !S.customModel ? modelCache().fast || '자동' : S.model} · 정확: ${modelCache().accurate || '자동'} · Live: ${S.liveModel} · 음성합성: ${modelCache().tts || '자동'}`;
 }
 
+let forceModel = '';
 async function gemini(body, attempt = 0) {
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
-  const model = S.model; let r;
+  const model = forceModel || S.model; let r;
   const rejected = k => localStorage.getItem(`reject:${k}:${model}`) === '1';          // 이 모델이 이미 거부한 옵션인지
   if (/flash/.test(model) && !body.__noThink && !rejected('think')) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
   if (rejected('schema') && body.generationConfig?.responseSchema) { body = {...body, generationConfig: {...body.generationConfig}}; delete body.generationConfig.responseSchema; }
@@ -904,8 +908,58 @@ function applyLite() { document.documentElement.classList.toggle('lite', S.lite 
   requestAnimationFrame(tick);
 })();
 
+
+// ---------- 마이크 시험: 4초 녹음 → 소리 크기·잡음 분석 → 다시 듣기 → 받아쓰기 결과 ----------
+function analyzeAudio(x, rate) {
+  const N = 2048, rms = []; let peak = 0, clip = 0;
+  for (let i = 0; i < x.length; i++) { const v = Math.abs(x[i]); if (v > peak) peak = v; if (v >= 0.98) clip++; }
+  for (let i = 0; i + N <= x.length; i += N) { let s = 0; for (let j = 0; j < N; j++) s += x[i + j] * x[i + j]; rms.push(Math.sqrt(s / N)); }
+  const sorted = [...rms].sort((a, b) => a - b), q = p => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] || 0;
+  const noise = Math.max(q(0.1), 1e-5), voice = q(0.9), snr = 20 * Math.log10(Math.max(voice, 1e-5) / noise);
+  const db = v => 20 * Math.log10(Math.max(v, 1e-5));
+  const level = peak < 0.04 ? 'quiet' : (clip > 20 || peak >= 0.99) ? 'loud' : 'ok';
+  const noisy = voice > 0.01 && snr < 12 || noise > 0.03;
+  return {peak, voice, noise, snr, clip, level, noisy, voiceDb: db(voice), noiseDb: db(noise), seconds: x.length / rate};
+}
+async function micTest() {
+  const box = $('#micTestOut'); box.hidden = false; box.innerHTML = '';
+  const line = (t, cls) => { const d = document.createElement('div'); d.textContent = t; if (cls) d.className = cls; box.append(d); return d; };
+  $('#micTestBtn').disabled = true;
+  let stream, ctx;
+  try {
+    stream = await getMic(); ctx = new (window.AudioContext || window.webkitAudioContext)(); await ctx.resume();
+    const label = stream.getAudioTracks()[0]?.label || '기본 마이크';
+    line('🎙 ' + label + ` · 처리: ${{all: '에코·잡음제거·자동볼륨', echo: '에코만', raw: '원음'}[S.micProc]} · ${ctx.sampleRate}Hz`);
+    const prog = line('4초 동안 평소처럼 한국어로 말씀해 보세요…', 'tip');
+    const src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(2048, 1, 1), chunks = [];
+    proc.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    src.connect(proc); proc.connect(ctx.destination);
+    await new Promise(r => setTimeout(r, +(window.__micTestMs || 4000)));
+    proc.disconnect(); src.disconnect();
+    const n = chunks.reduce((a, c) => a + c.length, 0), all = new Float32Array(n); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+    const an = analyzeAudio(all, ctx.sampleRate); prog.remove();
+    const lv = {quiet: ['❌ 소리가 너무 작아요 — 마이크에 더 가까이(10~20cm) 말씀하세요', 'bad'], loud: ['⚠️ 소리가 너무 커서 찌그러져요 — 조금 멀리서 말씀하세요', 'warn'], ok: ['✅ 소리 크기 적당해요', 'good']}[an.level];
+    line(`${lv[0]}  (목소리 ${an.voiceDb.toFixed(0)}dB · 최고점 ${(an.peak * 100).toFixed(0)}%)`, lv[1]);
+    line(an.noisy ? `⚠️ 주변 잡음이 많아요 — 잡음 대비 ${an.snr.toFixed(0)}dB (12dB 이상이 좋아요). 조용한 곳이나 마이크를 입 가까이에` : `✅ 잡음 적어요 (잡음 대비 ${an.snr.toFixed(0)}dB)`, an.noisy ? 'warn' : 'good');
+    if (/bluetooth|블루투스|pis|speaker|스피커|hands.?free/i.test(label)) line('⚠️ 블루투스 장치의 마이크로 보여요 — 소리가 작고 거칠게 들어올 수 있어요. 위의 마이크 선택에서 iPhone 마이크를 골라 보세요', 'warn');
+    const wav = encodeWav(downsample(all, ctx.sampleRate, 16000), 16000);
+    const au = document.createElement('audio'); au.controls = true; au.src = URL.createObjectURL(new Blob([wav], {type: 'audio/wav'})); box.append(au);
+    line('방금 녹음된 소리예요. ▶ 눌러서 직접 들어 보세요 (실제로 앱이 듣는 소리입니다)', 'tip');
+    const w = line('받아쓰기 확인 중…', 'tip');
+    forceModel = modelCache().accurate || 'gemini-flash-latest';
+    try {
+      const r = await gemini({contents: [{parts: [{text: 'Transcribe exactly what is said in this audio. The speaker uses Korean, English or Telugu. Return JSON {"transcript": "...", "language": "..."}. If you cannot make out any speech, return an empty transcript.'}, {inline_data: {mime_type: 'audio/wav', data: b64(wav)}}]}],
+        generationConfig: {temperature: 0, responseMimeType: 'application/json', responseSchema: {type: 'OBJECT', properties: {transcript: {type: 'STRING'}, language: {type: 'STRING'}}, required: ['transcript', 'language']}}});
+      w.className = ''; w.textContent = r.transcript ? `📝 정확한 모델이 받아쓴 결과: "${r.transcript}" (${r.language})` : '📝 말소리를 알아듣지 못했어요 — 마이크 위치·소리 크기를 확인하세요';
+      line('이 결과가 말씀하신 것과 다르면 → 마이크/잡음 문제, 같으면 → 실시간 통역 모델의 인식 문제일 수 있어요.', 'tip');
+    } catch (e) { w.className = 'bad'; w.textContent = '받아쓰기 실패: ' + e.message.slice(0, 160); }
+    finally { forceModel = ''; }
+  } catch (e) { line(e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 허용해 주세요.' : '마이크 시험 실패: ' + e.message, 'bad'); }
+  finally { stream?.getTracks().forEach(t => t.stop()); try { await ctx?.close(); } catch {} $('#micTestBtn').disabled = false; $('#micName').textContent = ''; }
+}
+
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v24';
+const APP_VERSION = 'v25';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -959,6 +1013,8 @@ $('#echoMode').onchange = e => S.echoMode = e.target.value;
 $('#autoSpeak').onchange = e => setSpeak(e.target.checked);
 $('#callMode').onchange = e => setCall(e.target.checked);
 $('#callReadKorean').checked = S.callReadKorean; $('#callReadKorean').onchange = e => S.callReadKorean = e.target.checked;
+$('#micProc').value = S.micProc; $('#micProc').onchange = e => S.micProc = e.target.value;
+$('#micTestBtn').onclick = () => micTest();
 $('#micSel').onchange = e => { S.micId = e.target.value; S.micLabel = e.target.value ? e.target.selectedOptions[0].textContent.replace(/ \(연결 확인 전\)$/, '') : ''; };
 $('#refreshMic').onclick = () => refreshMics(true);
 if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => refreshMics(false));
