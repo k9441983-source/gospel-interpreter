@@ -85,43 +85,95 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
 
 // ---------- 음성 합성 (TTS) ----------
 
+// ---------- 상태 알림(토스트) · 오류 기록: 소리가 안 날 때 항상 이유를 보여 주기 위함 ----------
+function toast(msg, kind = 'info', ms = 3500) {
+  const el = $('#toast'); if (!el) return;
+  el.textContent = msg; el.className = 'toast ' + kind; el.hidden = false;
+  clearTimeout(toast.t); if (ms) toast.t = setTimeout(() => { el.hidden = true; }, ms);
+}
+function toastHide() { const el = $('#toast'); if (el) { el.hidden = true; clearTimeout(toast.t); } }
+const sleep = ms => new Promise(r => setTimeout(r, ms * (window.__fastWait ? 0.001 : 1)));
+const errLog = [];
+window.addEventListener('error', e => { errLog.push(`${new Date().toLocaleTimeString()} ${e.message}`); if (errLog.length > 20) errLog.shift(); });
+window.addEventListener('unhandledrejection', e => { errLog.push(`${new Date().toLocaleTimeString()} ${e.reason?.message || e.reason}`); if (errLog.length > 20) errLog.shift(); });
+function audioSession(type) { try { if (navigator.audioSession && navigator.audioSession.type !== type) navigator.audioSession.type = type; } catch {} }
+const SILENT_WAV = "data:audio/wav;base64,UklGRqQMAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YYAMAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+
 // ---------- Gemini 음성 합성 (자연스러운 목소리) ----------
 const GVOICES = [['Charon', '남성 · 차분하고 설명하는 톤 (기본)'], ['Orus', '남성 · 단단하고 또렷함'], ['Alnilam', '남성 · 단단함'], ['Schedar', '남성 · 고르고 안정적'],
   ['Sadaltager', '남성 · 지적인 톤'], ['Kore', '여성 · 또렷함'], ['Sulafat', '여성 · 따뜻함'], ['Vindemiatrix', '여성 · 부드러움'], ['Achernar', '여성 · 부드럽고 낮음']];
-async function geminiTTS(text, attempt = 0) {
+function retryAfter(d, msg) {                              // Google이 알려 준 "N초 뒤 다시" 값을 읽음
+  const info = (d.error?.details || []).find(x => /RetryInfo/.test(x['@type'] || ''));
+  const s = parseFloat(info?.retryDelay) || parseFloat((msg.match(/retry in ([\d.]+)s/i) || [])[1]);
+  return Number.isFinite(s) ? s : 0;
+}
+async function geminiTTS(text, attempt = 0, notify = true) {
   if (!S.apiKey) throw new Error('API 키가 없습니다');
-  const model = modelCache().tts || 'gemini-2.5-flash-preview-tts';
+  let model = modelCache().tts || 'gemini-2.5-flash-preview-tts', lastErr = null;
   const prompt = `Read this aloud calmly, warmly and steadily, in a natural gentle tone at an even pace (never sad, tearful or whiny): ${text}`;
-  let r;
-  try {
-    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
-      body: JSON.stringify({contents: [{parts: [{text: prompt}]}], generationConfig: {responseModalities: ['AUDIO'], speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: S.gvoice}}}}}),
-    });
-  } catch (e) { throw new Error(`연결 실패: ${e.message}`); }
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    if (attempt < 1 && (r.status === 404 || /no longer available|not found/i.test(d.error?.message || ''))) { await discoverModels(true); if (modelCache().tts && modelCache().tts !== model) return geminiTTS(text, attempt + 1); }
-    throw new Error(`${r.status} ${(d.error?.message || '').slice(0, 160)} [모델: ${model}]`);
+  for (let k = 0; k < 3; k++) {                            // 일시적인 오류는 최대 3번까지 시도
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), +(window.__ttsTimeout || 20000));
+    let r, d;
+    try {
+      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
+        body: JSON.stringify({contents: [{parts: [{text: prompt}]}], generationConfig: {responseModalities: ['AUDIO'], speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: S.gvoice}}}}}),
+      });
+      d = await r.json().catch(() => ({}));
+    } catch (e) { lastErr = new Error(e.name === 'AbortError' ? '응답이 너무 늦어요 (20초)' : `연결 실패: ${e.message}`); clearTimeout(timer); if (e.name !== 'AbortError' && k < 2) { await sleep(800 * (k + 1)); continue; } throw lastErr; }   // 시간 초과는 다시 기다리지 않고 바로 대체
+    clearTimeout(timer);
+    const msg = d.error?.message || '';
+    if (r.ok) {
+      const inl = d.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData;
+      if (inl?.data) {
+        const rate = +((inl.mimeType || '').match(/rate=(\d+)/)?.[1] || 24000), bin = atob(inl.data), n = bin.length >> 1, f = new Float32Array(n);
+        for (let i = 0; i < n; i++) { const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); f[i] = (v >= 0x8000 ? v - 0x10000 : v) / 32768; }
+        return {samples: f, rate};
+      }
+      lastErr = new Error('음성 데이터가 없습니다 [모델: ' + model + ']');                  // 가끔 오디오 대신 빈 응답이 옴 → 재시도
+      if (k < 2) { await sleep(500); continue; } throw lastErr;
+    }
+    lastErr = new Error(`${r.status} ${msg.slice(0, 160)} [모델: ${model}]`);
+    if (k === 0 && (r.status === 404 || /no longer available|not found/i.test(msg))) {     // 단종된 모델 → 최신 모델 탐색
+      await discoverModels(true); if (modelCache().tts && modelCache().tts !== model) { model = modelCache().tts; continue; }
+    }
+    if (r.status === 429) {
+      if (/limit:\s*0\b|PerDay|free[_ ]?tier/i.test(JSON.stringify(d.error || {}))) { lastErr.hard = true; throw lastErr; }   // 이 키는 사용 한도가 없거나 하루치를 다 씀 → 기다려도 소용없음
+      const w = Math.min(retryAfter(d, msg) || 6, 25);
+      if (k < 2) { if (notify) toast(`사용량 제한 — ${Math.ceil(w)}초 뒤 다시 시도해요`, 'warn', 0); await sleep(w * 1000); continue; }
+      throw lastErr;
+    }
+    if (r.status >= 500 || (r.status === 400 && /tried to generate text|only be used for (TTS|text-to-speech)/i.test(msg))) { if (k < 2) { await sleep(600 * (k + 1)); continue; } }
+    throw lastErr;
   }
-  const inl = d.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData;
-  if (!inl?.data) throw new Error('음성 데이터가 없습니다 [모델: ' + model + ']');
-  const rate = +((inl.mimeType || '').match(/rate=(\d+)/)?.[1] || 24000), bin = atob(inl.data), n = bin.length >> 1, f = new Float32Array(n);
-  for (let i = 0; i < n; i++) { const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); f[i] = (v >= 0x8000 ? v - 0x10000 : v) / 32768; }
-  return {samples: f, rate};
+  throw lastErr || new Error('음성 생성 실패');
 }
 const GT = {
-  ctx: null, gen: 0, next: 0, srcs: [], cache: new Map(),
-  ensure() { if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); } if (this.ctx.state === 'suspended') this.ctx.resume(); return this.ctx; },
+  ctx: null, gen: 0, next: 0, srcs: [], cache: new Map(), loops: 0, silent: null, down: 0,
+  ensure() {
+    if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); }
+    if (!live) {                                                   // 통역(마이크) 중에는 건드리지 않음
+      audioSession('playback');                                    // iOS: 무음 스위치와 상관없이 재생
+      try { this.silent ||= Object.assign(new Audio(SILENT_WAV), {loop: true, volume: 0.02}); this.silent.play().catch(() => {}); } catch {}   // 구형 iOS용: 무음 오디오로 재생 모드 유지
+    }
+    if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});      // iOS는 'suspended'뿐 아니라 'interrupted' 상태도 있음
+    return this.ctx;
+  },
+  async ready() {                                                   // 소리가 실제로 나갈 수 있는 상태인지 확인
+    const ctx = this.ensure();
+    if (ctx.state !== 'running') await Promise.race([ctx.resume().catch(() => {}), sleep(1200)]);
+    return ctx.state === 'running';
+  },
   active() { return !!this.ctx && this.ctx.currentTime < this.next; },
-  flush() { this.gen++; this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; },
+  idleUI() { if (!this.active() && !this.loops) { setPlayUI('idle'); try { this.silent?.pause(); } catch {} if (!speechSynthesis.speaking) $('#stopBtn').hidden = true; } },
+  flush() { this.gen++; this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; try { this.silent?.pause(); } catch {} setPlayUI('idle'); },
   schedule(pcm) {
     const ctx = this.ensure(), buf = ctx.createBuffer(1, pcm.samples.length, pcm.rate); buf.getChannelData(0).set(pcm.samples);
     const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
     const t = Math.max(ctx.currentTime + 0.05, this.next); src.start(t); this.next = t + buf.duration; this.srcs.push(src);
-    src.onended = () => { this.srcs = this.srcs.filter(x => x !== src); if (!this.active() && !speechSynthesis.speaking) $('#stopBtn').hidden = true; };
+    src.onended = () => { this.srcs = this.srcs.filter(x => x !== src); this.idleUI(); };
   },
-  fetch(text) {                                           // 같은 문장은 다시 요청하지 않음
+  fetch(text) {                                                     // 같은 문장은 다시 요청하지 않음
     const k = S.gvoice + '|' + text;
     if (!this.cache.has(k)) { this.cache.set(k, geminiTTS(text).catch(e => { this.cache.delete(k); throw e; })); if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value); }
     return this.cache.get(k);
@@ -129,31 +181,50 @@ const GT = {
   async enqueue(texts, langKey, warnEl) {
     const gen = this.gen, items = [].concat(texts).filter(t => t && t.trim());
     if (!items.length) return;
-    // 첫 문장은 단독으로(빨리 시작), 이후 4문장(약 600자)씩 묶어 요청 수를 줄임 (음성 합성은 분당 요청 제한이 낮음)
-    const groups = [[items[0]]]; let cur = [], len = 0;
+    if (Date.now() < this.down) { toast(this.downWhy, 'warn', 4000); return TTS.deviceEnqueue(items, langKey, warnEl); }    // 이 키는 음성합성을 못 쓰는 상태 → 바로 기기 음성
+    const groups = [[items[0]]]; let cur = [], len = 0;            // 첫 문장은 단독으로(빨리 시작), 이후 4문장(약 600자)씩 묶음
     for (const t of items.slice(1)) { if (cur.length && (cur.length >= 4 || len + t.length > 600)) { groups.push(cur); cur = []; len = 0; } cur.push(t); len += t.length; }
     if (cur.length) groups.push(cur);
-    $('#stopBtn').hidden = false; show(warnEl, '');
-    let next = this.fetch(groups[0].join('\n\n')); next.catch(() => {});
-    for (let i = 0; i < groups.length; i++) {
-      if (gen !== this.gen) return;
-      const cur = next;
-      if (i + 1 < groups.length) { next = this.fetch(groups[i + 1].join('\n\n')); next.catch(() => {}); }   // 지금 구간이 재생되는 동안 다음 구간을 미리 받음
-      let pcm;
-      try { pcm = await cur; }
-      catch (e) {                                          // 실패하면 이 구간만 기기 음성으로 대체
+    $('#stopBtn').hidden = false; show(warnEl, ''); setPlayUI('loading'); toast('⏳ 목소리 만드는 중… (몇 초 걸려요)', 'info', 0);
+    this.loops++; let playedAny = false, fails = 0;
+    try {
+      let next = this.fetch(groups[0].join('\n\n')); next.catch(() => {});
+      for (let i = 0; i < groups.length; i++) {
         if (gen !== this.gen) return;
-        show(warnEl, `Gemini 음성을 만들지 못해 기기 음성으로 읽습니다 (${e.message.slice(0, 140)})`);
-        if (this.ctx) await new Promise(r => setTimeout(r, Math.max(0, (this.next - this.ctx.currentTime) * 1000) + 50));
-        if (gen === this.gen) TTS.deviceEnqueue(groups[i], langKey, null);
-        continue;
+        if (Date.now() < this.down) {                               // 한도에 걸렸거나 연속 실패 → 남은 부분은 한꺼번에 기기 음성으로 (헛요청 방지)
+          toast(this.downWhy, 'warn', 6000);
+          if (this.ctx) await sleep(Math.max(0, (this.next - this.ctx.currentTime) * 1000) + 50);
+          if (gen === this.gen) { TTS.deviceEnqueue(groups.slice(i).flat(), langKey, null); playedAny = true; }
+          break;
+        }
+        const cur = next;
+        if (i + 1 < groups.length) { next = this.fetch(groups[i + 1].join('\n\n')); next.catch(() => {}); }   // 재생되는 동안 다음 구간을 미리 받음
+        let pcm, why = '';
+        try { pcm = await cur; if (gen !== this.gen) return; if (!(await this.ready())) why = '소리 출력이 막혀 있어요 (무음 스위치·볼륨·다른 앱을 확인하세요)'; }
+        catch (e) {
+          if (gen !== this.gen) return;
+          why = e.message.slice(0, 140);
+          if (e.hard) { this.down = Date.now() + 10 * 60000; this.downWhy = 'Gemini 음성 사용 한도에 걸렸어요. 10분간 기기 음성으로 읽어요'; }
+        }
+        if (why) {                                                  // 이 구간만 기기 음성으로 대체하고 이유를 알림
+          if (!(Date.now() < this.down) && ++fails >= 2) { this.down = Date.now() + 2 * 60000; this.downWhy = 'Gemini 음성이 연속으로 실패해서 2분간 기기 음성으로 읽어요'; }
+          toast('Gemini 음성 대신 기기 음성으로 읽어요 — ' + why, 'warn', 6000); show(warnEl, 'Gemini 음성을 만들지 못해 기기 음성으로 읽습니다 (' + why + ')');
+          if (this.ctx) await sleep(Math.max(0, (this.next - this.ctx.currentTime) * 1000) + 50);
+          if (gen === this.gen) { TTS.deviceEnqueue(groups[i], langKey, null); playedAny = true; }
+          continue;
+        }
+        fails = 0; this.schedule(pcm);
+        if (!playedAny) { playedAny = true; setPlayUI('playing'); toast('🔊 재생 중', 'ok', 1500); }
       }
-      if (gen !== this.gen) return;
-      this.schedule(pcm);
-    }
+    } finally { this.loops--; if (gen === this.gen) { if (!this.active() && !speechSynthesis.speaking) { setPlayUI('idle'); toastHide(); } } }
   },
 };
-
+// 성경 화면 버튼 상태: 눌렀는데 반응이 없는 것처럼 보이지 않게
+function setPlayUI(state) {
+  const b = document.querySelector('#playChapter'); if (!b) return;
+  b.textContent = {idle: '▶ 장 전체 텔루구어로 듣기', loading: '⏳ 목소리 만드는 중…', playing: '🔊 재생 중…'}[state];
+  b.classList.toggle('busy', state !== 'idle');
+}
 const TTS = {
   voices: [],
   load() { this.voices = speechSynthesis.getVoices(); },
@@ -175,7 +246,7 @@ const TTS = {
     return this.deviceEnqueue(texts, langKey, warnEl);
   },
   deviceEnqueue(texts, langKey, warnEl) {
-    this.load();
+    this.load(); try { speechSynthesis.resume(); } catch {}                       // iOS: 일시정지 상태로 멈춰 있으면 소리가 안 남
     let missing = null;
     for (const t of [].concat(texts)) {
       if (!t || !t.trim()) continue;
@@ -191,7 +262,7 @@ const TTS = {
     if (warnEl) show(warnEl, missing ? `${missing.name} 음성이 설치되어 있지 않을 수 있습니다. iPhone 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성에서 내려받아 주세요.` : '');
     $('#stopBtn').hidden = false;
   },
-  stop() { speechSynthesis.cancel(); GT.flush(); devBusy = false; devPoll = performance.now(); $('#stopBtn').hidden = true; },
+  stop() { speechSynthesis.cancel(); GT.flush(); devBusy = false; devPoll = performance.now(); $('#stopBtn').hidden = true; toastHide(); },
 };
 if ('speechSynthesis' in window) { TTS.load(); speechSynthesis.onvoiceschanged = () => TTS.load(); }
 $('#stopBtn').onclick = () => TTS.stop();
@@ -889,7 +960,11 @@ async function fillPron(token) {
   } catch (e) { if (token === B.token) show($('#berr'), e.message); }
   $('#pronSpin').hidden = true;
 }
-$('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('#bwarn')); };
+$('#playChapter').onclick = () => {
+  TTS.unlock();
+  if (!curTe.some(t => t && t.trim())) { toast('본문을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요', 'warn', 3500); return; }   // 반응 없이 끝나지 않도록
+  TTS.speak(curTe, 'telugu', $('#bwarn'));
+};
 
 
 
@@ -959,7 +1034,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -986,6 +1061,11 @@ async function runDiag() {
   log(null, `화면 프레임(1.5초): 평균 ${(fr.reduce((a, b) => a + b, 0) / fr.length).toFixed(1)}ms · 최대 ${Math.max(...fr).toFixed(0)}ms · 효과 줄이기 ${document.documentElement.classList.contains('lite') ? '켜짐' : '꺼짐'}`);
   try { const o = await koreanPronunciation(['దేవుడు ప్రేమించెను'], 'telugu'); log(true, `한글 발음 변환: 정상 → ${o[0]}`); }
   catch (e) { log(false, `한글 발음 변환: ${e.message.slice(0, 260)}`); }
+  { const t0 = performance.now();
+    try { await geminiTTS('దేవుడు', 0, false); log(true, `읽어주는 목소리(Gemini 음성합성): 정상 · ${Math.round(performance.now() - t0)}ms`); }
+    catch (e) { log(false, `읽어주는 목소리(Gemini 음성합성): ${e.message.slice(0, 220)}${e.hard ? ' ← 이 키는 음성합성 사용량이 없거나 한도를 다 썼어요 (기기 음성으로 대신 읽어요)' : ''}`); } }
+  log(null, `오디오 상태: ${GT.ctx ? GT.ctx.state : '아직 안 만듦'} · 재생 모드: ${navigator.audioSession ? navigator.audioSession.type : '미지원'} · 폰 옆면 무음 스위치가 켜져 있으면 소리가 안 날 수 있어요`);
+  if (errLog.length) log(false, `최근 앱 오류 ${errLog.length}건: ${errLog.slice(-3).join(' | ').slice(0, 260)}`);
   const live = await new Promise(res => {
     const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.apiKey));
     const t = setTimeout(() => { try { ws.close(); } catch {} res('8초 안에 응답 없음'); }, 8000);
