@@ -20,9 +20,14 @@ const S = {
   set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
   get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
+  get callMode() { return localStorage.getItem('callMode') === '1'; },
+  set callMode(v) { localStorage.setItem('callMode', v ? '1' : '0'); },
+  get callReadKorean() { return localStorage.getItem('callReadKorean') === '1'; },
+  set callReadKorean(v) { localStorage.setItem('callReadKorean', v ? '1' : '0'); },
+  get echoEff() { return this.callMode ? 'mute' : this.echoMode; },        // 통화 모드에서는 번갈아 말하기(되울림 방지를 위해 번역 소리 중 마이크 차단)
   get echoMode() { return localStorage.getItem('echoMode') || 'smart'; },
   set echoMode(v) { localStorage.setItem('echoMode', v); },
-  get muteOnPlay() { return this.echoMode !== 'off'; },
+  get muteOnPlay() { return this.echoEff !== 'off'; },
   get speed() { return localStorage.getItem('speed') || 'live'; },
   set speed(v) { localStorage.setItem('speed', v); },
   get model() { const c = modelCache(); return this.customModel || (this.speed === 'accurate' ? (c.accurate || 'gemini-flash-latest') : (c.fast || 'gemini-flash-lite-latest')); },
@@ -491,7 +496,7 @@ class GeminiLive {
     let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
     let rms = Math.sqrt(s / d.length);
     // ── 폰 스피커의 번역 소리가 마이크로 다시 들어가는 것 방지 ──
-    const st = echoState(this.pctx.currentTime < this.next), em = S.echoMode;
+    const st = echoState(this.pctx.currentTime < this.next), em = S.echoEff;
     const active = st !== 'none' && em !== 'off';
     let gate = false;                                       // true → 이 조각은 에코로 보고 무음 처리
     if (active) {
@@ -520,17 +525,36 @@ class GeminiLive {
     // 0.4초 쉬면 문장 끝 · 2.5초 넘게 말하다 잠깐 숨 쉬면 · 5초 넘으면 강제로 끊어 번역 시작
     if (this.silMs >= 400 || (this.segMs >= 2500 && this.silMs >= 120) || this.segMs >= 5000) this.endActivity();
   }
+  // 통화 모드: 번역문이 텔루구어인 턴만 소리로 재생 (한국어는 글자로만). 언어는 번역 글자(outputTranscription)로 판단
+  route(b) {
+    if (!S.callMode) return this.play(b);
+    const t = this.turn ||= {decided: false, play: false, buf: [], text: ''};
+    if (t.decided) { if (t.play) this.play(b); return; }
+    t.buf.push(b);
+    if (!t.timer) t.timer = setTimeout(() => { if (!t.decided) { t.decided = true; t.play = true; t.buf.splice(0).forEach(x => this.play(x)); } }, 1500);   // 글자가 안 오면 1.5초 뒤 재생(안전장치)
+  }
+  decide(text) {
+    if (!S.callMode) return;
+    const t = this.turn ||= {decided: false, play: false, buf: [], text: ''};
+    if (t.decided) return;
+    t.text += text;
+    const c = cleanOut(t.text); if (!c) return;
+    t.decided = true; t.play = callSpeakOK(c); clearTimeout(t.timer);
+    const buf = t.buf.splice(0); if (t.play) buf.forEach(x => this.play(x));
+  }
+  endTurn() { if (this.turn) { clearTimeout(this.turn.timer); this.turn = null; } }
   handle(m) {
     if (m.goAway) { this.h.onError('Live 세션이 곧 종료됩니다. 다시 시작해 주세요.'); return; }
     const sc = m.serverContent; if (!sc) return;
-    if (sc.interrupted) this.flush();
+    if (sc.interrupted) { this.flush(); this.endTurn(); }
     if (sc.inputTranscription?.text) this.h.onInput(sc.inputTranscription.text);
     if (sc.outputTranscription?.text) this.h.onOutput(sc.outputTranscription.text);
+    if (sc.outputTranscription?.text) this.decide(sc.outputTranscription.text);
     for (const p of sc.modelTurn?.parts || []) {
       const d = p.inlineData;
-      if (d?.data && /audio/.test(d.mimeType || '') && S.autoSpeak && S.geminiVoice) this.play(d.data);
+      if (d?.data && /audio/.test(d.mimeType || '') && S.autoSpeak && S.geminiVoice) this.route(d.data);
     }
-    if (sc.turnComplete) this.h.onTurnEnd();
+    if (sc.turnComplete) { this.endTurn(); this.h.onTurnEnd(); }
   }
   play(b64data) {                                                            // 24kHz 16bit PCM 이어붙여 재생
     const bin = atob(b64data), n = bin.length >> 1;
@@ -595,7 +619,7 @@ function onSegment(wav) {
     if (!r.translation || !r.translation.trim()) return;
     show($('#err'), '');
     const pron = addEntry(r, langKey, (performance.now() - t0) / 1000);
-    if (S.autoSpeak) TTS.enqueue(r.translation, langKey, $('#warn'));   // 낭독을 먼저 시작
+    if (S.autoSpeak && callSpeakOK(r.translation)) TTS.enqueue(r.translation, langKey, $('#warn'));   // 낭독을 먼저 시작
     if (langKey === 'both' && isTelugu(r.transcript))                    // 텔루구어로 말함 → 영어 번역도 추가
       englishOf(r.transcript).then(t => { if (t) pron.en.textContent = '🇬🇧 ' + t; }).catch(() => {});
     const outLang = scriptLang(r.translation, langKey);
@@ -618,6 +642,17 @@ function setLevel(lv) {
 }
 // 모델이 '말 없음'을 나타내려고 내보내는 <no speech>, {pause}, [BLANK_AUDIO] 같은 제어 문구는 번역이 아니므로 제거
 const cleanOut = s => s.replace(/<[^>]*>?|\{[^}]*\}?|\[[^\]]*\]?/g, '').replace(/\s{2,}/g, ' ').trim();
+// ---------- 통화 모드: 번역문의 언어에 따라 소리로 읽을지(텔루구어) / 글자로만 보여 줄지(한국어) 결정 ----------
+// 상대방(텔루구어) 말씀의 한국어 번역은 내가 눈으로 읽고, 내 말씀의 텔루구어 번역은 소리로 읽어 상대가 듣게 한다.
+function callSpeakOK(text) {
+  if (!S.callMode) return true;
+  const l = scriptLang(cleanOut(text || ''), 'both');
+  return l === 'telugu' || (l === 'korean' && S.callReadKorean);
+}
+function dirLabel(text) {
+  const l = scriptLang(cleanOut(text || ''), 'both');
+  return l === 'korean' ? 'in' : l === 'telugu' ? 'out' : '';
+}
 function makeLiveHandlers(langKey) {
   let card = null, lastEnd = 0;
   const open = () => {
@@ -643,12 +678,13 @@ function makeLiveHandlers(langKey) {
       const c = open(); c.raw += t; c.text = cleanOut(c.raw);
       if (!c.text) return;                                      // 제어 문구뿐이면 무시
       c.tr.textContent = c.text; c.el.hidden = false;
-      if (!c.shown && (lastEnd || c.t0)) { c.shown = true; c.head.textContent = `인식된 말씀 (실시간) · ⏱ 말 끝→번역 ${((performance.now() - (lastEnd || c.t0)) / 1000).toFixed(1)}초`; }
+      if (S.callMode && !c.dir) { c.dir = dirLabel(c.text); if (c.dir) c.el.dataset.dir = c.dir; }
+      if (!c.shown && (lastEnd || c.t0)) { c.shown = true; c.head.textContent = `${S.callMode && c.dir ? (c.dir === 'in' ? '📞 상대방 말씀 → 한국어' : '📞 내 말씀 → 상대에게') : '인식된 말씀 (실시간)'} · ⏱ 말 끝→번역 ${((performance.now() - (lastEnd || c.t0)) / 1000).toFixed(1)}초`; }
     },
     onTurnEnd: () => {
       const c = card; card = null; if (!c) return;
       if (!c.text.trim()) { c.el.remove(); renderHint(); return; }
-      if (!S.geminiVoice && S.autoSpeak) TTS.enqueue(c.text, langKey, $('#warn'));
+      if (!S.geminiVoice && S.autoSpeak && callSpeakOK(c.text)) TTS.enqueue(c.text, langKey, $('#warn'));
       if (langKey === 'both' && isTelugu(c.inp.textContent))               // 텔루구어로 말함 → 영어 번역도 추가
         englishOf(c.inp.textContent).then(t => { if (t) c.en.textContent = '🇬🇧 ' + t; }).catch(() => {});
       const outLang = scriptLang(c.text, langKey);
@@ -690,6 +726,22 @@ function setSpeak(v) {
 }
 $('#speakToggle').onclick = () => setSpeak(!S.autoSpeak);
 renderSpeakToggle();
+// ---------- 통화 모드 ----------
+function renderCall() {
+  const on = S.callMode, b = $('#callToggle');
+  b.textContent = on ? '📞 통화 모드 켜짐' : '📞 통화 모드'; b.classList.toggle('on', on);
+  $('#callHelp').hidden = !on; $('#callMode').checked = on; document.documentElement.classList.toggle('callmode', on);
+}
+function setCall(v) {
+  if (v) {                                           // 켤 때: 양방향 + 소리 읽기. 이전 번역 언어는 기억해 두었다가 끌 때 복원
+    localStorage.callPrevTarget = S.target; localStorage.callPrevSpeak = S.autoSpeak ? '1' : '0';
+    S.callMode = true; S.target = 'both'; S.autoSpeak = true; S.geminiVoice = true;
+  } else {
+    S.callMode = false; if (localStorage.callPrevTarget) S.target = localStorage.callPrevTarget; S.autoSpeak = localStorage.callPrevSpeak !== '0';
+  }
+  $('#target').value = S.target; $('#geminiVoice').checked = S.geminiVoice; renderSpeakToggle(); renderCall(); renderHint();
+}
+$('#callToggle').onclick = () => setCall(!S.callMode);
 const speedSel = $('#speed'); speedSel.value = S.speed; speedSel.onchange = () => { S.speed = speedSel.value; };
 renderHint();
 
@@ -823,7 +875,7 @@ function applyLite() { document.documentElement.classList.toggle('lite', S.lite 
 })();
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v22';
+const APP_VERSION = 'v23';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -874,6 +926,8 @@ $('#liveModel').onchange = e => { if (e.target.value.trim()) S.liveModel = e.tar
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
 $('#echoMode').onchange = e => S.echoMode = e.target.value;
 $('#autoSpeak').onchange = e => setSpeak(e.target.checked);
+$('#callMode').onchange = e => setCall(e.target.checked);
+$('#callReadKorean').checked = S.callReadKorean; $('#callReadKorean').onchange = e => S.callReadKorean = e.target.checked;
 $('#lite').onchange = e => { S.lite = e.target.checked; S.liteAuto = false; applyLite(); };
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
@@ -890,7 +944,7 @@ $('#runDiag').onclick = () => runDiag();
 $('#copyDiag').onclick = async () => { try { await navigator.clipboard.writeText($('#diag').textContent); $('#copyDiag').textContent = '복사됨 ✓'; } catch { $('#copyDiag').textContent = '길게 눌러 직접 복사하세요'; } };
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
-$('#appVer').textContent = APP_VERSION; applyLite(); renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
+$('#appVer').textContent = APP_VERSION; applyLite(); renderCall(); renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   const had = !!navigator.serviceWorker.controller; let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !reloaded && !live) { reloaded = true; location.reload(); } });   // 새 버전이 설치되면 자동으로 새로고침 (통역 중에는 제외)

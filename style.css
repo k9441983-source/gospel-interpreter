@@ -68,7 +68,7 @@ input[type=checkbox].switch:checked::before{transform:translateX(20px)}
 [hidden]{display:none!important}
 
 /* ───────── 통역 화면 ───────── */
-.toolrow{margin:2px 0 6px}
+.toolrow{margin:2px 0 6px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .toolrow .btn{width:100%;padding:13px 18px;font-size:15px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow)}
 .toolrow .btn.on{background:var(--grad);color:#fff;border-color:transparent;box-shadow:0 10px 24px -10px rgba(100,100,240,.7)}
 .hint{margin:0;padding:34px 12px 10px;text-align:center;white-space:pre-line;color:var(--muted);font-size:15px;line-height:1.75}
@@ -175,3 +175,11 @@ html.lite #micRing{display:none}
 html.lite .meter{display:block;position:absolute;left:50%;top:44px;width:150px;height:4px;margin-left:-75px;border-radius:2px;background:var(--line);overflow:hidden}
 html.lite .meter i{display:block;width:100%;height:100%;background:var(--grad);transform-origin:left;transform:scaleX(0)}
 html.lite #mic.rec::after{display:none}
+
+/* ───────── 통화 모드: 상대방 말씀(한국어)은 크게, 내 말씀은 작게 ───────── */
+.callhelp{margin:4px 0 8px;padding:11px 14px;border-radius:var(--r-md);background:var(--acc-soft);color:var(--acc-ink);font-size:13px;line-height:1.6}
+.card[data-dir=in]{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),var(--shadow)}
+.card[data-dir=in] .tr{font-size:32px;line-height:1.5;font-weight:650}
+.card[data-dir=in] .pron{display:none}
+.card[data-dir=out] .tr{font-size:20px;opacity:.9}
+.card[data-dir=out]>div:not([class]){font-size:17px;color:var(--fg)}
