@@ -44,3 +44,4 @@ nav button.on{color:var(--acc)}
 label select{display:block;width:100%;max-width:100%;margin-top:6px}
 .toolrow{margin:2px 0 6px}.toolrow .btn{width:100%;font-size:15px;padding:10px}.toolrow .btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .en{color:var(--sub);font-style:italic;margin:2px 0 6px}.v.teonly .pr{font-size:17px;margin:4px 0}.v.teonly>div:first-child{font-size:18px}
+#diag{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:8px 0}

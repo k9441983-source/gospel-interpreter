@@ -698,6 +698,44 @@ async function fillPron(token) {
 }
 $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('#bwarn')); };
 
+
+// ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
+const APP_VERSION = 'v17';
+async function runDiag() {
+  const out = [], box = $('#diag');
+  const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
+  box.hidden = false; $('#copyDiag').hidden = false; log(null, `앱 버전 ${APP_VERSION} · ${(navigator.userAgent.match(/OS [\d_]+/) || [''])[0]}`);
+  if (!S.apiKey) return log(false, 'API 키가 비어 있습니다');
+  log(null, `API 키 ${S.apiKey.slice(0, 4)}… (${S.apiKey.length}자)`);
+  const base = 'https://generativelanguage.googleapis.com/v1beta/', hdr = {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey};
+  const call = async (url, init) => { try { const r = await fetch(url, init); const d = await r.json().catch(() => ({})); return {r, d}; } catch (e) { return {err: e.message}; } };
+  const fmt = x => x.err ? `연결 실패: ${x.err}` : x.r.ok ? `정상 (${x.r.status})` : `${x.r.status} ${x.d.error?.message || ''}`.slice(0, 220);
+  let x = await call(base + 'models?pageSize=1000', {headers: hdr});
+  log(!x.err && x.r.ok, `모델 목록: ${x.err || x.r.ok ? (x.err ? fmt(x) : (x.d.models || []).length + '개 조회') : fmt(x)}`);
+  const c = await discoverModels(true); renderModelInfo();
+  log(null, `자동 선택 → 빠름: ${c.fast || '없음'} · 정확: ${c.accurate || '없음'} · Live: ${c.live || '없음'}`);
+  const model = S.model, g = (extra) => ({method: 'POST', headers: hdr, body: JSON.stringify({contents: [{parts: [{text: 'Return a JSON array with one short string.'}]}], generationConfig: extra})});
+  log(null, `시험에 쓸 모델: ${model}${S.customModel ? ' (직접 지정)' : ''}`);
+  for (const [name, gc] of [['기본 요청', undefined], ['JSON 형식', {responseMimeType: 'application/json'}],
+    ['JSON + 응답 스키마', {responseMimeType: 'application/json', responseSchema: {type: 'ARRAY', items: {type: 'STRING'}}}],
+    ['JSON + 스키마 + 추론 생략', {responseMimeType: 'application/json', responseSchema: {type: 'ARRAY', items: {type: 'STRING'}}, thinkingConfig: {thinkingBudget: 0}}]]) {
+    x = await call(`${base}models/${encodeURIComponent(model)}:generateContent`, g(gc));
+    log(!x.err && x.r.ok, `${name}: ${fmt(x)}`);
+  }
+  try { const o = await koreanPronunciation(['దేవుడు ప్రేమించెను'], 'telugu'); log(true, `한글 발음 변환: 정상 → ${o[0]}`); }
+  catch (e) { log(false, `한글 발음 변환: ${e.message.slice(0, 260)}`); }
+  const live = await new Promise(res => {
+    const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.apiKey));
+    const t = setTimeout(() => { try { ws.close(); } catch {} res('8초 안에 응답 없음'); }, 8000);
+    ws.onopen = () => ws.send(JSON.stringify({setup: {model: 'models/' + S.liveModel.replace(/^models\//, ''), generationConfig: {responseModalities: ['AUDIO']}}}));
+    ws.onmessage = async ev => { try { const m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text()); if (m.setupComplete) { clearTimeout(t); ws.close(); res(true); } } catch {} };
+    ws.onclose = ev => { clearTimeout(t); res(`연결 종료 ${ev.code} ${ev.reason || ''}`.trim()); };
+    ws.onerror = () => {};
+  });
+  log(live === true, `Live 연결 (${S.liveModel}): ${live === true ? '정상' : live}`);
+  log(null, '진단 끝 — 아래 내용을 그대로 복사해서 보내 주세요');
+}
+
 // ---------- 설정 탭 ----------
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
 $('#liveModel').value = localStorage.getItem('liveModel') || ''; $('#liveModel').placeholder = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#echoMode').value = S.echoMode; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
@@ -718,7 +756,9 @@ $('#testKey').onclick = async () => {
     out.textContent = `✅ 연결 성공 (모델: ${S.model})`;
   } catch (e) { out.textContent = '❌ ' + e.message; }
 };
+$('#runDiag').onclick = () => runDiag();
+$('#copyDiag').onclick = async () => { try { await navigator.clipboard.writeText($('#diag').textContent); $('#copyDiag').textContent = '복사됨 ✓'; } catch { $('#copyDiag').textContent = '길게 눌러 직접 복사하세요'; } };
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
-renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
+$('#appVer').textContent = APP_VERSION; renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
