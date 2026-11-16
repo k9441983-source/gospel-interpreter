@@ -19,6 +19,7 @@
   <section id="tab-translate" class="tab active">
     <header><h1>복음 통역</h1>
       <div class="hdrsel"><select id="speed" aria-label="속도"><option value="live">⚡⚡ 실시간(Live)</option><option value="fast">⚡ 문장 단위</option><option value="accurate">🎯 정확</option></select><select id="target" aria-label="번역 언어"></select></div></header>
+    <div class="toolrow"><button id="speakToggle" class="btn" aria-label="읽어주기"></button></div>
     <div id="warn" class="warn" hidden></div>
     <div id="err" class="err" hidden></div>
     <div id="entries"><p class="hint" id="hint"></p></div>
@@ -56,7 +57,7 @@
     <label class="check"><input type="checkbox" id="geminiVoice"> Live 통역: Gemini 음성으로 읽기 (끄면 기기 텔루구어 음성)</label>
     <label>번역 소리가 나는 동안 마이크 (폰 스피커 소리가 다시 인식되는 것 방지)
       <select id="echoMode"><option value="smart">스마트 — 번역 소리는 걸러내고 큰 목소리만 인식 (추천)</option><option value="mute">완전 차단 — 번역 소리가 끝날 때까지 안 들음</option><option value="off">끄기 — 이어폰 사용 시</option></select></label>
-    <label class="check"><input type="checkbox" id="autoSpeak"> 번역 후 자동으로 읽어주기</label>
+    <label class="check"><input type="checkbox" id="autoSpeak"> 번역을 소리로 읽어주기 (끄면 글자로만 표시)</label>
     <label class="check"><input type="checkbox" id="showPron"> 한글 발음 표시</label>
     <label>읽는 속도 <input type="range" id="rate" min="0.5" max="1.2" step="0.05"></label>
     <button id="testKey" class="btn">Gemini 연결 테스트</button>

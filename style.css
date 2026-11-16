@@ -42,3 +42,4 @@ nav button.on{color:var(--acc)}
 .v button{border:0;background:none;color:var(--acc);font-size:13px;padding:2px 0}
 .hdrsel{display:flex;gap:6px}.hdrsel select{max-width:50%}
 label select{display:block;width:100%;max-width:100%;margin-top:6px}
+.toolrow{margin:2px 0 6px}.toolrow .btn{width:100%;font-size:15px;padding:10px}.toolrow .btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}

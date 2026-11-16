@@ -5,6 +5,7 @@ const LANGS = {
   english: {name: 'English', prompt: 'English', locale: 'en-US'},
   korean:  {name: '한국어', prompt: 'Korean (한국어)', locale: 'ko-KR'},
   hindi:   {name: 'हिन्दी (힌디어)', prompt: 'Hindi (देवनागरी script)', locale: 'hi-IN'},
+  both:    {name: '⇄ 양방향 (한국어·영어 ↔ 텔루구어)', prompt: 'Telugu or Korean (two-way)', locale: 'te-IN'},
 };
 const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'}];
 
@@ -27,13 +28,29 @@ const S = {
   get model() { return this.customModel || (this.speed === 'accurate' ? 'gemini-2.5-flash' : 'gemini-2.5-flash-lite'); },
   get target() { return localStorage.getItem('target') || 'telugu'; },
   set target(v) { localStorage.setItem('target', v); },
-  get autoSpeak() { return localStorage.getItem('autoSpeak') !== '0'; },
+  get autoSpeak() { return localStorage.getItem('autoSpeak') === '1'; },   // 기본: 글자로만 보기
   set autoSpeak(v) { localStorage.setItem('autoSpeak', v ? '1' : '0'); },
   get showPron() { return localStorage.getItem('showPron') !== '0'; },
   set showPron(v) { localStorage.setItem('showPron', v ? '1' : '0'); },
   get rate() { return parseFloat(localStorage.getItem('rate') || '0.85'); },
   set rate(v) { localStorage.setItem('rate', String(v)); },
 };
+
+
+// 번역문의 글자(문자 체계)로 실제 출력 언어를 판별 — 양방향 모드에서 낭독 음성·발음 표기를 고르는 데 사용
+function scriptLang(text, fallback) {
+  if (/[\u0C00-\u0C7F]/.test(text)) return 'telugu';
+  if (/[\uAC00-\uD7AF]/.test(text)) return 'korean';
+  if (/[\u0900-\u097F]/.test(text)) return 'hindi';
+  return fallback === 'both' ? 'english' : fallback;
+}
+// 번역 방향 지시문 (실시간·문장 단위 공통)
+function directionPrompt(langKey) {
+  if (langKey === 'both')
+    return 'Two-way interpreting: if the speech is Korean or English, translate it into Telugu (తెలుగు script); if the speech is Telugu, translate it into Korean (한국어). Never translate into the language that was just spoken.';
+  const T = LANGS[langKey].prompt;
+  return `The speaker may use any language (typically Korean, English or Telugu). Translate everything into ${T}. If the speech is already in ${T} (for example an echo of the interpreter's own voice), say or output nothing.`;
+}
 
 function show(el, msg) { el.textContent = msg || ''; el.hidden = !msg; }
 
@@ -61,18 +78,20 @@ const TTS = {
   speak(texts, langKey, warnEl) { speechSynthesis.cancel(); this.enqueue(texts, langKey, warnEl); },
   // 진행 중인 낭독을 끊지 않고 뒤에 이어 붙임 (실시간 통역용)
   enqueue(texts, langKey, warnEl) {
-    const L = LANGS[langKey];
     this.load();
-    const v = this.voiceFor(L.locale);
-    show(warnEl, v ? '' : `${L.name} 음성이 설치되어 있지 않을 수 있습니다. iPhone 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성에서 내려받아 주세요.`);
+    let missing = null;
     for (const t of [].concat(texts)) {
       if (!t || !t.trim()) continue;
+      const key = langKey === 'both' ? scriptLang(t, langKey) : langKey;
+      const Lk = LANGS[key] || LANGS.english, v = this.voiceFor(Lk.locale);
+      if (!v && !missing) missing = Lk;
       const u = new SpeechSynthesisUtterance(t);
-      u.lang = L.locale; if (v) u.voice = v;
+      u.lang = Lk.locale; if (v) u.voice = v;
       u.rate = S.rate;
       u.onend = u.onerror = () => { if (!speechSynthesis.speaking) $('#stopBtn').hidden = true; };
       speechSynthesis.speak(u);
     }
+    show(warnEl, missing ? `${missing.name} 음성이 설치되어 있지 않을 수 있습니다. iPhone 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성에서 내려받아 주세요.` : '');
     $('#stopBtn').hidden = false;
   },
   stop() { speechSynthesis.cancel(); $('#stopBtn').hidden = true; },
@@ -143,9 +162,9 @@ async function gemini(body) {
 
 function interpret(wav, langKey) {
   // 출력 토큰(특히 텔루구어·한글 발음)이 응답 시간을 좌우하므로 최소한만 요청한다. 발음은 별도 요청.
-  const prompt = `Interpreter for a Christian gospel message. The audio is Korean or English (maybe accented).
-Return JSON: "transcript" = exact words spoken (original language); "translation" = natural ${LANGS[langKey].prompt} for reading aloud (use the standard Bible wording if a verse is quoted).
-If there is no intelligible speech, only noise, or it is already in the target language (e.g. an echo), return empty strings.`;
+  const prompt = `Interpreter for a Christian gospel message (the speaker may be accented). ${directionPrompt(langKey)}
+Return JSON: "transcript" = exact words spoken (original language); "translation" = the natural translation for reading aloud (use the standard Bible wording if a verse is quoted).
+If there is no intelligible speech or only noise, return empty strings.`;
   return gemini({
     contents: [{parts: [{text: prompt}, {inline_data: {mime_type: 'audio/wav', data: b64(wav)}}]}],
     generationConfig: {
@@ -232,11 +251,10 @@ class Live {
 class GeminiLive {
   constructor(h) { this.h = h; this.ready = false; this.next = 0; this.srcs = []; }
   setupMsg(langKey, mode) {
-    const T = LANGS[langKey].prompt;
     const setup = {
       model: 'models/' + S.liveModel.replace(/^models\//, ''),
       generationConfig: {responseModalities: ['AUDIO']},
-      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speaker talks in Korean or English. You receive the talk in short fragments, each one possibly an incomplete sentence. Translate each fragment into ${T} immediately, like a simultaneous interpreter, keeping wording consistent with what you already said. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If the speech is already in ${T}, or there is only silence or noise, say nothing.`}]},
+      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. ${directionPrompt(langKey)} You receive the talk in short fragments, each one possibly an incomplete sentence: translate each fragment immediately, like a simultaneous interpreter, keeping wording consistent with what you already said. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If there is only silence or noise, say nothing.`}]},
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };
@@ -341,7 +359,7 @@ class GeminiLive {
     if (sc.outputTranscription?.text) this.h.onOutput(sc.outputTranscription.text);
     for (const p of sc.modelTurn?.parts || []) {
       const d = p.inlineData;
-      if (d?.data && /audio/.test(d.mimeType || '') && S.geminiVoice) this.play(d.data);
+      if (d?.data && /audio/.test(d.mimeType || '') && S.autoSpeak && S.geminiVoice) this.play(d.data);
     }
     if (sc.turnComplete) this.h.onTurnEnd();
   }
@@ -372,7 +390,7 @@ let live = null, pending = 0, chain = Promise.resolve();
 const entries = [];
 function renderHint() {
   $('#hint').textContent = entries.length ? '' :
-    `아래 버튼을 누르고 한국어/영어로 말씀하세요.\n문장이 끝날 때마다 바로 ${LANGS[S.target].name}로 번역해 읽어 줍니다.\n(스피커 소리가 다시 입력되지 않도록 이어폰 사용을 권장합니다)`;
+    `아래 버튼을 누르고 말씀하세요. (한국어·영어·텔루구어 모두 가능)\n문장이 끝날 때마다 ${LANGS[S.target].name}(으)로 번역해 ${S.autoSpeak ? '글자와 소리로' : '글자로'} 보여 줍니다.\n위의 🔊 버튼으로 읽어주기를 켜고 끌 수 있습니다.`;
 }
 function addEntry(r, langKey, secs) {
   entries.unshift({r, langKey});
@@ -408,8 +426,9 @@ function onSegment(wav) {
     show($('#err'), '');
     const pron = addEntry(r, langKey, (performance.now() - t0) / 1000);
     if (S.autoSpeak) TTS.enqueue(r.translation, langKey, $('#warn'));   // 낭독을 먼저 시작
-    if (S.showPron && langKey !== 'korean')                              // 한글 발음은 뒤따라 채움
-      koreanPronunciation([r.translation], langKey).then(o => pron.textContent = o[0]).catch(() => {});
+    const outLang = scriptLang(r.translation, langKey);
+    if (S.showPron && outLang !== 'korean')                              // 한글 발음은 뒤따라 채움
+      koreanPronunciation([r.translation], outLang).then(o => pron.textContent = o[0]).catch(() => {});
   });
 }
 // Live 모드: 한 번의 발화(turn)를 카드 하나로 표시
@@ -441,8 +460,9 @@ function makeLiveHandlers(langKey) {
       const c = card; card = null; if (!c) return;
       if (!c.text.trim()) { c.tr.parentElement.remove(); return; }
       if (!S.geminiVoice && S.autoSpeak) TTS.enqueue(c.text, langKey, $('#warn'));
-      if (S.showPron && langKey !== 'korean')
-        koreanPronunciation([c.text], langKey).then(o => c.pron.textContent = o[0]).catch(() => {});
+      const outLang = scriptLang(c.text, langKey);
+      if (S.showPron && outLang !== 'korean')
+        koreanPronunciation([c.text], outLang).then(o => c.pron.textContent = o[0]).catch(() => {});
     },
     onError: msg => show($('#err'), msg),
     onClose: msg => { show($('#err'), msg + ' — 다시 시작해 주세요.'); live = null; setPhase('idle'); },
@@ -468,6 +488,17 @@ const targetSel = $('#target');
 for (const [k, v] of Object.entries(LANGS)) targetSel.add(new Option(v.name, k));
 targetSel.value = S.target;
 targetSel.onchange = () => { S.target = targetSel.value; renderHint(); };
+function renderSpeakToggle() {
+  const b = $('#speakToggle'); b.textContent = S.autoSpeak ? '🔊 읽어주기 켜짐' : '🔇 글자로만 보기';
+  b.classList.toggle('on', S.autoSpeak); $('#autoSpeak').checked = S.autoSpeak; renderHint();
+}
+function setSpeak(v) {
+  S.autoSpeak = v; renderSpeakToggle();
+  if (!v) { TTS.stop(); live?.flush?.(); }                 // 끄면 진행 중인 낭독도 즉시 멈춤
+  else TTS.unlock();
+}
+$('#speakToggle').onclick = () => setSpeak(!S.autoSpeak);
+renderSpeakToggle();
 const speedSel = $('#speed'); speedSel.value = S.speed; speedSel.onchange = () => { S.speed = speedSel.value; };
 renderHint();
 
@@ -576,7 +607,7 @@ $('#model').onchange = e => S.customModel = e.target.value;
 $('#liveModel').onchange = e => S.liveModel = e.target.value || 'gemini-2.5-flash-native-audio-preview-12-2025';
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
 $('#echoMode').onchange = e => S.echoMode = e.target.value;
-$('#autoSpeak').onchange = e => S.autoSpeak = e.target.checked;
+$('#autoSpeak').onchange = e => setSpeak(e.target.checked);
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
 $('#testKey').onclick = async () => {
