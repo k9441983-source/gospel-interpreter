@@ -47,8 +47,9 @@ const TTS = {
     if (m.length) return m.find(v => /enhanced|premium/i.test(v.name)) || m[0];
     return this.voices.find(v => v.lang.toLowerCase().startsWith(lang.slice(0, 2))) || null;
   },
-  speak(texts, langKey, warnEl) {
-    speechSynthesis.cancel();
+  speak(texts, langKey, warnEl) { speechSynthesis.cancel(); this.enqueue(texts, langKey, warnEl); },
+  // 진행 중인 낭독을 끊지 않고 뒤에 이어 붙임 (실시간 통역용)
+  enqueue(texts, langKey, warnEl) {
     const L = LANGS[langKey];
     this.load();
     const v = this.voiceFor(L.locale);
@@ -68,36 +69,7 @@ const TTS = {
 if ('speechSynthesis' in window) { TTS.load(); speechSynthesis.onvoiceschanged = () => TTS.load(); }
 $('#stopBtn').onclick = () => TTS.stop();
 
-// ---------- 녹음 (16kHz mono WAV) ----------
-class Recorder {
-  async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
-    const AC = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new AC();
-    if (this.ctx.state === 'suspended') await this.ctx.resume();
-    this.src = this.ctx.createMediaStreamSource(this.stream);
-    this.proc = this.ctx.createScriptProcessor(4096, 1, 1);
-    this.chunks = []; this.samples = 0; this.level = 0;
-    this.proc.onaudioprocess = e => {
-      const d = e.inputBuffer.getChannelData(0);
-      this.chunks.push(new Float32Array(d)); this.samples += d.length;
-      let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
-      this.level = Math.min(1, Math.sqrt(s / d.length) * 6);
-      if (this.onlevel) this.onlevel(this.level);
-      if (this.samples / this.ctx.sampleRate > 300 && this.onlimit) this.onlimit(); // 5분 상한
-    };
-    this.src.connect(this.proc); this.proc.connect(this.ctx.destination); // 출력은 무음
-  }
-  async stop() {
-    const rate = this.ctx.sampleRate;
-    this.proc.disconnect(); this.src.disconnect();
-    this.stream.getTracks().forEach(t => t.stop());
-    await this.ctx.close();
-    const all = new Float32Array(this.samples); let o = 0;
-    for (const c of this.chunks) { all.set(c, o); o += c.length; }
-    return encodeWav(downsample(all, rate, 16000), 16000);
-  }
-}
+// ---------- 오디오 유틸 ----------
 function downsample(buf, from, to) {
   if (from === to) return buf;
   const ratio = from / to, n = Math.floor(buf.length / ratio), out = new Float32Array(n);
@@ -154,7 +126,7 @@ The attached audio is spoken in Korean or English (possibly mixed, with an accen
 2. Translate it into natural, clear ${LANGS[langKey].prompt} suitable for being read aloud.
    If a Bible verse is quoted, use the wording familiar from that language's standard Bible translation.
 3. Write "pronunciation_ko": how the translation sounds, spelled in Hangul (한글) so a Korean reader can read it aloud phonetically, syllable by syllable, separating words with spaces and keeping the same sentence breaks. If the target language is Korean, return an empty string.
-4. If the audio has no intelligible speech, return empty strings.
+4. If the audio has no intelligible speech, or it is only background noise, or it is already spoken in the target language (for example an echo of the interpreter's own voice), return empty strings.
 Respond only with JSON.`;
   return gemini({
     contents: [{parts: [{text: prompt}, {inline_data: {mime_type: 'audio/wav', data: b64(wav)}}]}],
@@ -190,14 +162,60 @@ const PCACHE = (() => {
   return {get: s => m[h(s)], set(s, v) { m[h(s)] = v; try { localStorage.setItem('pron', JSON.stringify(m)); } catch {} }};
 })();
 
-// ---------- 통역 탭 ----------
-const rec = new Recorder();
-let phase = 'idle';
-const entries = [];
 
+// ---------- 실시간 문장 분할 (침묵 감지) ----------
+class Live {
+  constructor(onSegment, onLevel) { this.onSegment = onSegment; this.onLevel = onLevel; }
+  async start() {
+    this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AC(); if (this.ctx.state === 'suspended') await this.ctx.resume();
+    this.rate = this.ctx.sampleRate;
+    this.src = this.ctx.createMediaStreamSource(this.stream);
+    this.proc = this.ctx.createScriptProcessor(4096, 1, 1);
+    this.pre = []; this.cur = null; this.noise = 0.008; this.silenceMs = 0; this.speechMs = 0; this.curMs = 0;
+    this.proc.onaudioprocess = e => this.feed(new Float32Array(e.inputBuffer.getChannelData(0)));
+    this.src.connect(this.proc); this.proc.connect(this.ctx.destination);
+    try { this.wake = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+  feed(d) {
+    const ms = d.length / this.rate * 1000;
+    let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+    const rms = Math.sqrt(s / d.length);
+    this.onLevel(Math.min(1, rms * 6));
+    const speech = rms > Math.max(0.015, this.noise * 3);
+    if (!speech) this.noise = this.noise * 0.95 + rms * 0.05;   // 주변 소음 크기에 적응
+    if (this.cur) {
+      this.cur.push(d); this.curMs += ms;
+      if (speech) { this.silenceMs = 0; this.speechMs += ms; } else this.silenceMs += ms;
+      if ((this.silenceMs >= 700 && this.speechMs >= 400) || this.curMs >= 15000) this.cut();   // 문장 끝 / 최대 15초
+      else if (this.silenceMs >= 1500 && this.speechMs < 400) this.cur = null;                   // 소음만 있었음
+    } else {
+      this.pre.push(d); if (this.pre.length > 4) this.pre.shift();                              // 말 시작 직전 약 0.3초 보존
+      if (speech) { this.cur = this.pre; this.pre = []; this.curMs = this.cur.length * ms; this.speechMs = ms; this.silenceMs = 0; }
+    }
+  }
+  cut() {
+    const chunks = this.cur; this.cur = null;
+    const n = chunks.reduce((a, c) => a + c.length, 0), all = new Float32Array(n); let o = 0;
+    for (const c of chunks) { all.set(c, o); o += c.length; }
+    this.onSegment(encodeWav(downsample(all, this.rate, 16000), 16000));
+  }
+  async stop() {
+    if (this.cur && this.speechMs >= 300) this.cut();
+    this.proc.disconnect(); this.src.disconnect();
+    this.stream.getTracks().forEach(t => t.stop());
+    try { await this.wake?.release(); } catch {}
+    await this.ctx.close();
+  }
+}
+
+// ---------- 통역 탭 ----------
+let live = null, pending = 0, chain = Promise.resolve();
+const entries = [];
 function renderHint() {
   $('#hint').textContent = entries.length ? '' :
-    `아래 버튼을 눌러 한국어/영어로 말씀하세요.\n다시 누르면 ${LANGS[S.target].name}로 번역해 읽어 줍니다.`;
+    `아래 버튼을 누르고 한국어/영어로 말씀하세요.\n문장이 끝날 때마다 바로 ${LANGS[S.target].name}로 번역해 읽어 줍니다.\n(스피커 소리가 다시 입력되지 않도록 이어폰 사용을 권장합니다)`;
 }
 function addEntry(r, langKey) {
   entries.unshift({r, langKey});
@@ -212,39 +230,35 @@ function addEntry(r, langKey) {
   $('#entries').prepend(el); renderHint();
 }
 function setPhase(p) {
-  phase = p;
-  $('#mic').classList.toggle('rec', p === 'recording');
-  $('#mic').disabled = p === 'processing';
-  $('#micIcon').textContent = p === 'recording' ? '⏹' : p === 'processing' ? '…' : '🎤';
-  $('#micLabel').textContent = {idle: '눌러서 말하기', recording: '듣는 중… 끝나면 다시 누르세요', processing: '번역 중…'}[p];
-  $('#meter').hidden = p !== 'recording';
+  $('#mic').classList.toggle('rec', p === 'live');
+  $('#micIcon').textContent = p === 'live' ? '⏹' : '🎤';
+  $('#micLabel').textContent = p === 'live' ? '🔴 실시간 통역 중… 멈추려면 누르세요' : '눌러서 실시간 통역 시작';
+  $('#meter').hidden = p !== 'live';
+  $('#mic').dataset.phase = p;
 }
-async function stopAndTranslate() {
-  setPhase('processing');
-  try {
-    const wav = await rec.stop();
-    if (wav.length < 16000) throw new Error('녹음이 너무 짧습니다.');
-    const langKey = S.target;
-    const r = await interpret(wav, langKey);
-    if (!r.translation) throw new Error('음성을 인식하지 못했습니다.');
+function status() {
+  if ($('#mic').dataset.phase === 'live') $('#micLabel').textContent = '🔴 실시간 통역 중' + (pending ? ` · 번역 중 ${pending}` : '') + ' — 멈추려면 누르세요';
+}
+function onSegment(wav) {
+  const langKey = S.target;
+  const p = interpret(wav, langKey).catch(e => ({error: e}));   // 바로 요청 시작 (여러 문장 동시 처리)
+  pending++; status();
+  chain = chain.then(async () => {                              // 표시·낭독은 말한 순서대로
+    const r = await p; pending--; status();
+    if (r.error) return show($('#err'), r.error.message);
+    if (!r.translation || !r.translation.trim()) return;
+    show($('#err'), '');
     addEntry(r, langKey);
-    if (S.autoSpeak) TTS.speak(r.translation, langKey, $('#warn'));
-  } catch (e) { show($('#err'), e.message); }
-  setPhase('idle');
+    if (S.autoSpeak) TTS.enqueue(r.translation, langKey, $('#warn'));
+  });
 }
 $('#mic').onclick = async () => {
   show($('#err'), '');
-  if (phase === 'recording') return stopAndTranslate();
-  if (phase !== 'idle') return;
+  if (live) { const l = live; live = null; setPhase('idle'); await l.stop(); return; }
   TTS.unlock(); TTS.stop();
-  try {
-    await rec.start();
-    rec.onlevel = l => $('#meter i').style.width = (l * 100) + '%';
-    rec.onlimit = () => { rec.onlimit = null; stopAndTranslate(); };
-    setPhase('recording');
-  } catch (e) {
-    show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message);
-  }
+  const l = new Live(onSegment, lv => $('#meter i').style.width = (lv * 100) + '%');
+  try { await l.start(); live = l; setPhase('live'); }
+  catch (e) { show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
 };
 const targetSel = $('#target');
 for (const [k, v] of Object.entries(LANGS)) targetSel.add(new Option(v.name, k));
