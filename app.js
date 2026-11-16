@@ -11,7 +11,7 @@ const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'}]
 // ---------- 설정 ----------
 const S = {
   get apiKey() { return localStorage.getItem('apiKey') || ''; },
-  set apiKey(v) { localStorage.setItem('apiKey', v.trim()); },
+  set apiKey(v) { localStorage.setItem('apiKey', v.replace(/[^\x21-\x7E]/g, '')); }, // 공백·줄바꿈·한글 등 제거
   get model() { return localStorage.getItem('model') || 'gemini-2.5-flash'; },
   set model(v) { localStorage.setItem('model', v.trim()); },
   get target() { return localStorage.getItem('target') || 'telugu'; },
@@ -129,11 +129,16 @@ function b64(bytes) {
 // ---------- Gemini ----------
 async function gemini(body) {
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.model)}:generateContent`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
-    body: JSON.stringify(body),
-  });
+  let r;
+  try {
+    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.model)}:generateContent`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error(`[Gemini 서버 연결 실패] ${e.message} — 인터넷/VPN/콘텐츠 차단기를 확인하세요.`);
+  }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Gemini 오류 (${r.status}): ${data.error?.message || '알 수 없는 오류'}`);
   const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).find(Boolean);
@@ -251,8 +256,10 @@ const bibleData = {};
 const B = {primary: 'nkjv', book: 42, chapter: 2, token: 0};
 async function loadBible(id) {
   if (!bibleData[id]) {
-    const r = await fetch(`bibles/${id}.json`);
-    if (!r.ok) throw new Error('성경 데이터를 불러오지 못했습니다.');
+    let r;
+    try { r = await fetch(`bibles/${id}.json`); }
+    catch (e) { throw new Error(`[성경 파일 ${id} 불러오기 실패] ${e.message} — 네트워크가 끊겼거나 파일이 너무 커서 실패했을 수 있습니다.`); }
+    if (!r.ok) throw new Error(`[성경 파일 ${id}] 서버 응답 ${r.status}`);
     bibleData[id] = await r.json();
   }
   return bibleData[id];
@@ -349,7 +356,7 @@ $('#testKey').onclick = async () => {
     });
     const d = await r.json().catch(() => ({}));
     out.textContent = r.ok ? '✅ 연결 성공 (키·모델 정상)' : `❌ 오류 ${r.status}: ${d.error?.message || ''}`;
-  } catch (e) { out.textContent = '❌ 네트워크 오류: ' + e.message; }
+  } catch (e) { out.textContent = '❌ Gemini 서버 연결 실패: ' + e.message; }
 };
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
