@@ -7,8 +7,8 @@ main{height:calc(100% - 62px - env(safe-area-inset-bottom));overflow:hidden}
 .tab.active{display:block}
 #tab-translate.active{display:flex;flex-direction:column;padding-bottom:0}
 #entries{flex:1;overflow-y:auto}
-header{display:flex;justify-content:space-between;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 0 8px;position:sticky;top:0;background:var(--bg);z-index:2}
-h1{font-size:22px;margin:0}
+header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px 8px;padding:calc(10px + env(safe-area-inset-top)) 0 8px;position:sticky;top:0;background:var(--bg);z-index:2}
+h1{font-size:22px;margin:0;white-space:nowrap}
 select,input:not([type=checkbox]):not([type=range]){font:inherit;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg);max-width:60%}
 label{display:block;margin:14px 0}
 label input:not([type=checkbox]){display:block;width:100%;max-width:100%;margin-top:6px}
@@ -40,7 +40,7 @@ nav button.on{color:var(--acc)}
 .v .n{color:var(--sub);font-size:12px;margin-right:6px}
 .v .te{color:var(--sub)}.v .pr{color:var(--pron)}
 .v button{border:0;background:none;color:var(--acc);font-size:13px;padding:2px 0}
-.hdrsel{display:flex;gap:6px}.hdrsel select{max-width:50%}
+.hdrsel{display:flex;gap:6px;width:100%}.hdrsel select{flex:1 1 0;min-width:0;max-width:none;text-overflow:ellipsis;overflow:hidden}
 label select{display:block;width:100%;max-width:100%;margin-top:6px}
 .toolrow{margin:2px 0 6px}.toolrow .btn{width:100%;font-size:15px;padding:10px}.toolrow .btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .en{color:var(--sub);font-style:italic;margin:2px 0 6px}.v.teonly .pr{font-size:17px;margin:4px 0}.v.teonly>div:first-child{font-size:18px}

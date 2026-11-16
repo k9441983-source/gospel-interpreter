@@ -408,7 +408,7 @@ class GeminiLive {
     const setup = {
       model: 'models/' + S.liveModel.replace(/^models\//, ''),
       generationConfig: {responseModalities: ['AUDIO'], ...(mode === 'min' ? {} : {speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: S.gvoice}}}})},
-      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. ${directionPrompt(langKey)} You receive the talk in short fragments, each one possibly an incomplete sentence: translate each fragment immediately, like a simultaneous interpreter, keeping wording consistent with what you already said. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If there is only silence or noise, say nothing.`}]},
+      systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. The speakers only use Korean, English or Telugu (never Spanish, Hindi or other languages); if a word sounds like another language, assume it is one of these three. ${directionPrompt(langKey)} You receive the talk in short fragments, each one possibly an incomplete sentence: translate each fragment immediately, like a simultaneous interpreter, keeping wording consistent with what you already said. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If there is only silence or noise, say nothing.`}]},
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };
@@ -782,7 +782,7 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
