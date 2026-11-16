@@ -377,21 +377,28 @@ let forceModel = '';
 async function gemini(body, attempt = 0) {
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
   const model = forceModel || S.model; let r;
+  const ac = new AbortController(), gtimer = setTimeout(() => ac.abort(), +(window.__gemTimeout || 25000));   // 요청 하나가 멈춰도 뒤의 번역이 막히지 않게
   const rejected = k => localStorage.getItem(`reject:${k}:${model}`) === '1';          // 이 모델이 이미 거부한 옵션인지
   if (/flash/.test(model) && !body.__noThink && !rejected('think')) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
   if (rejected('schema') && body.generationConfig?.responseSchema) { body = {...body, generationConfig: {...body.generationConfig}}; delete body.generationConfig.responseSchema; }
   try {
     r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
+      method: 'POST', signal: ac.signal,
       headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
       body: JSON.stringify({...body, __noThink: undefined}),
     });
   } catch (e) {
-    throw new Error(`[Gemini 서버 연결 실패] ${e.message} — 인터넷/VPN/콘텐츠 차단기를 확인하세요.`);
+    clearTimeout(gtimer);
+    throw new Error(e.name === 'AbortError' ? '[응답이 너무 늦어요] 25초 안에 답이 오지 않았어요 — 네트워크를 확인하세요.' : `[Gemini 서버 연결 실패] ${e.message} — 인터넷/VPN/콘텐츠 차단기를 확인하세요.`);
   }
   const data = await r.json().catch(() => ({}));
+  clearTimeout(gtimer);
   if (!r.ok) {
     const msg = data.error?.message || '알 수 없는 오류';
+    if (r.status === 429) {                                               // 사용량 제한: 잠깐 기다렸다 다시, 한도를 다 쓴 경우는 이유를 알림
+      if (/limit:\s*0\b|PerDay|free[_ ]?tier/i.test(JSON.stringify(data.error || {}))) throw new Error('Gemini 사용 한도를 모두 썼어요 (무료 한도는 하루치가 정해져 있어요). 내일 다시 쓰거나 Google AI Studio에서 결제를 설정하세요.');
+      if (attempt < 3) { const w = Math.min(retryAfter(data, msg) || 5, 20); toast(`사용량 제한 — ${Math.ceil(w)}초 뒤 다시 시도해요`, 'warn', w * 1000); await sleep(w * 1000); return gemini(body, attempt + 1); }
+    }
     if (attempt < 2 && !S.customModel && (r.status === 404 || /no longer available|not found|deprecated/i.test(msg))) {
       await discoverModels(true);                                            // 단종된 모델 → 내 키로 쓸 수 있는 최신 모델을 다시 찾음
       if (S.model === model) {                                               // 못 찾았으면 오류가 권장한 모델을 사용
@@ -519,7 +526,7 @@ class Live {
 
 // ---------- Gemini Live API (WebSocket 실시간 통역) ----------
 class GeminiLive {
-  constructor(h) { this.h = h; this.ready = false; this.next = 0; this.srcs = []; }
+  constructor(h) { this.h = h; this.ready = false; this.next = 0; this.srcs = []; this.lastRx = 0; this.lastCb = 0; this.lastSpeech = 0; this.lastRestart = 0; this.awaitSince = 0; this.sessionStart = 0; this.reconnecting = false; }
   setupMsg(langKey, mode) {
     const setup = {
       model: 'models/' + S.liveModel.replace(/^models\//, ''),
@@ -547,18 +554,67 @@ class GeminiLive {
       };
       ws.onmessage = async ev => {
         let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text()); } catch { return; }
-        if (m.setupComplete) { this.ready = true; clearTimeout(timer); resolve(); return; }
+        this.lastRx = performance.now();
+        if (m.setupComplete) { this.ready = true; this.sessionStart = performance.now(); clearTimeout(timer); resolve(); return; }
         this.handle(m);
       };
     });
   }
-  async lost(why) {                                  // 연결이 끊기면 마이크·재생은 그대로 두고 자동 재연결
-    this.ready = false; this.h.onStatus?.('🔄 연결이 끊겨 다시 연결 중…');
-    for (let i = 0; i < 3 && !this.closing; i++) {
-      try { this.speaking = false; this.pre = []; await this.connect(this.langKey, this.mode); this.h.onStatus?.(null); return; }
-      catch { await new Promise(r => setTimeout(r, 600 * (i + 1))); }
+  lost(why) { return this.reconnect(why); }
+  // 연결을 새로 만든다 (끊겼을 때·서버가 종료를 예고했을 때·응답이 없을 때·세션 수명이 다 되어 갈 때). 마이크·재생은 그대로 유지
+  async reconnect(why, quiet) {
+    if (this.reconnecting || this.closing) return;
+    this.reconnecting = true;
+    if (/quota|exceeded|resource.?exhausted/i.test(why)) { this.reconnecting = false; return this.h.onClose('Gemini 사용 한도를 넘었어요 (' + why.slice(0, 80) + ')'); }
+    const old = this.ws; this.ready = false;
+    if (!quiet) this.h.onStatus?.('🔄 연결이 끊겨 다시 연결 중…');
+    try {
+      let ok = false;
+      for (let i = 0; i < 4 && !this.closing; i++) {
+        try { if (this.speaking) this.endActivity(); this.pre = []; this.cand = 0; this.endTurn(); await this.connect(this.langKey, this.mode); ok = true; break; }
+        catch (e) { if (/quota|exceeded/i.test(e.message)) { this.h.onClose('Gemini 사용 한도를 넘었어요 (' + e.message.slice(0, 80) + ')'); return; } await sleep(700 * (i + 1)); }
+      }
+      if (this.closing) return;
+      if (!ok) { this.h.onClose(why + ' (재연결 실패)'); return; }
+      this.awaitSince = 0; try { if (old && old !== this.ws) old.close(); } catch {}
+      this.h.onStatus?.(null);
+    } finally { this.reconnecting = false; }
+  }
+  // ── 건강 점검: 연결·마이크가 조용히 죽는 것을 감지해서 스스로 복구 ──
+  health() {
+    if (this.closing || this.reconnecting || !this.ictx) return;
+    const now = performance.now();
+    if (this.ictx.state !== 'running') this.ictx.resume().catch(() => {});                       // iOS는 다른 소리·알림 뒤 오디오를 멈추는 일이 있음
+    const tracks = this.stream ? this.stream.getAudioTracks() : [];
+    const micDead = now - this.lastCb > +(window.__micStallMs || 3000) || (tracks.length > 0 && tracks.every(t => t.readyState === 'ended'));
+    if (micDead && now - this.lastRestart > 5000) return this.restartMic();
+    if (this.ready && (!this.ws || this.ws.readyState > 1)) return this.reconnect('연결이 끊겼어요');       // 닫혔다는 신호 없이 죽은 연결
+    const rt = +(window.__respTimeout || 15000);
+    if (this.awaitSince && now - this.awaitSince > rt && now - this.lastRx > rt) {                  // 말씀 뒤 오래도록 서버가 아무 신호도 없음
+      toast('응답이 없어 연결을 새로 고칠게요', 'warn', 3500); return this.reconnect('서버 응답 없음');
     }
-    if (!this.closing) this.h.onClose(why + ' (재연결 실패)');
+    const age = now - this.sessionStart, soft = +(window.__sessionMaxMs || 9 * 60000), hard = +(window.__sessionHardMs || 12 * 60000);
+    if (this.ready && ((age > soft && !this.speaking && now - this.lastSpeech > 2500) || (age > hard && !this.speaking)))   // 서버의 세션 시간 제한(약 15분) 전에 조용한 틈에 미리 교체
+      return this.reconnect('세션 갱신', true);
+  }
+  attachMic() {
+    this.src = this.ictx.createMediaStreamSource(this.stream);
+    this.proc = this.ictx.createScriptProcessor(2048, 1, 1);   // 약 43ms 단위로 전송
+    this.proc.onaudioprocess = e => { this.lastCb = performance.now(); this.frame(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    this.src.connect(this.proc); this.proc.connect(this.ictx.destination);
+    this.lastCb = performance.now();
+    this.stream.getAudioTracks().forEach(t => { t.onended = () => { this.lastCb = 0; }; });         // 마이크를 빼앗기면 즉시 감지
+  }
+  async restartMic() {
+    this.lastRestart = performance.now(); toast('🎙 마이크가 멈춰서 다시 켜는 중…', 'warn', 3000);
+    try {
+      if (this.speaking) this.endActivity();
+      try { this.proc?.disconnect(); this.src?.disconnect(); } catch {}
+      this.stream?.getTracks().forEach(t => t.stop());
+      if (this.ictx.state === 'closed') { const AC = window.AudioContext || window.webkitAudioContext; this.ictx = new AC(); }
+      if (this.ictx.state !== 'running') await Promise.race([this.ictx.resume().catch(() => {}), sleep(1500)]);
+      this.stream = await getMic(); this.attachMic(); toast('🎙 마이크를 다시 연결했어요', 'ok', 2000);
+    } catch (e) { toast('마이크를 다시 켜지 못했어요 — 마이크 버튼을 눌러 다시 시작해 주세요', 'warn', 8000); }
   }
   async start(langKey) {
     this.langKey = langKey;
@@ -582,10 +638,10 @@ class GeminiLive {
       if (S.liveModel !== before) { lastErr = null; await tryModes(); renderModelInfo(); }
     }
     if (lastErr && !this.ready) { await this.stop(); throw new Error(`Live 연결 실패: ${lastErr.message} (모델: ${S.liveModel})`); }
-    this.src = this.ictx.createMediaStreamSource(this.stream);
-    this.proc = this.ictx.createScriptProcessor(2048, 1, 1);   // 약 43ms 단위로 전송
-    this.proc.onaudioprocess = e => this.frame(new Float32Array(e.inputBuffer.getChannelData(0)));
-    this.src.connect(this.proc); this.proc.connect(this.ictx.destination);
+    this.attachMic();
+    this.watch = setInterval(() => this.health(), +(window.__watchMs || 2000));
+    this.onVis = () => { if (!document.hidden) { this.ictx?.resume().catch(() => {}); this.pctx?.resume().catch(() => {}); this.health(); } };   // 앱으로 돌아오면 바로 점검
+    document.addEventListener('visibilitychange', this.onVis);
     try { this.wake = await navigator.wakeLock?.request('screen'); } catch {}
   }
   send(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); }
@@ -594,7 +650,7 @@ class GeminiLive {
     for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
     this.send({realtimeInput: {audio: {data: b64(new Uint8Array(pcm.buffer)), mimeType: 'audio/pcm;rate=16000'}}});
   }
-  endActivity() { this.send({realtimeInput: {activityEnd: {}}}); this.speaking = false; this.pre = []; this.cand = 0; this.h.onActivityEnd?.(); }
+  endActivity() { this.send({realtimeInput: {activityEnd: {}}}); if (this.segMs >= 800) this.awaitSince = performance.now(); this.speaking = false; this.pre = []; this.cand = 0; this.h.onActivityEnd?.(); }
   // 마이크 한 조각(약 43ms) 처리: 재생 중 차단 → 말 시작/끝 감지 → 전송
   frame(d) {
     const ms = d.length / this.ictx.sampleRate * 1000;
@@ -626,7 +682,7 @@ class GeminiLive {
       if (this.cand >= 5) { this.cand = 0; this.send({realtimeInput: {activityStart: {}}}); this.pre.forEach(x => this.sendAudio(x)); this.pre = []; this.speaking = true; this.segMs = 0; this.silMs = 0; }
       return;
     }
-    this.sendAudio(d); this.segMs += ms; this.silMs = speech ? 0 : this.silMs + ms;
+    this.sendAudio(d); this.segMs += ms; this.silMs = speech ? 0 : this.silMs + ms; if (speech) this.lastSpeech = performance.now();
     // 0.4초 쉬면 문장 끝 · 2.5초 넘게 말하다 잠깐 숨 쉬면 · 5초 넘으면 강제로 끊어 번역 시작
     if (this.silMs >= 400 || (this.segMs >= 2500 && this.silMs >= 120) || this.segMs >= 5000) this.endActivity();
   }
@@ -649,8 +705,9 @@ class GeminiLive {
   }
   endTurn() { if (this.turn) { clearTimeout(this.turn.timer); this.turn = null; } }
   handle(m) {
-    if (m.goAway) { this.h.onError('Live 세션이 곧 종료됩니다. 다시 시작해 주세요.'); return; }
+    if (m.goAway) { this.reconnect('서버 요청으로 연결 교체', true); return; }                        // 서버가 곧 끊는다고 알려 줌 → 미리 새 연결로 갈아탐
     const sc = m.serverContent; if (!sc) return;
+    this.awaitSince = 0;
     if (sc.interrupted) { this.flush(); this.endTurn(); }
     if (sc.inputTranscription?.text) this.h.onInput(sc.inputTranscription.text);
     if (sc.outputTranscription?.text) this.h.onOutput(sc.outputTranscription.text);
@@ -673,7 +730,7 @@ class GeminiLive {
   flush() { this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; }
   async stop() {
     if (this.speaking) this.endActivity();
-    this.closing = true;
+    this.closing = true; clearInterval(this.watch); if (this.onVis) document.removeEventListener('visibilitychange', this.onVis);
     try { this.proc?.disconnect(); this.src?.disconnect(); } catch {}
     this.stream?.getTracks().forEach(t => t.stop());
     try { await this.wake?.release(); } catch {}
@@ -1034,7 +1091,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v26';
+const APP_VERSION = 'v27';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
