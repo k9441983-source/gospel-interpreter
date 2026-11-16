@@ -1047,17 +1047,21 @@ async function runDownload(kind) {
   const cb = $('#dlChapter'), bb = $('#dlBook');
   if (kind === 'chapter' && !readItems().some(t => t && t.trim())) return toast('본문을 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요', 'warn');
   DL.running = true; DL.cancel = false; try { navigator.storage?.persist?.(); } catch {}
-  let failed = 0, hard = false, total = 0, done = 0; const label = kind === 'chapter' ? cb : bb;
+  let failed = 0, hard = false, total = 0, done = 0; const label = kind === 'chapter' ? cb : kind === 'nt' ? $('#dlNT') : bb;
   try {
-    const chapters = kind === 'chapter' ? [readItems()] : (await loadBook(readId(), B.book)).filter(c => c && c.length);
+    let chapters;
+    if (kind === 'nt') {                                         // 신약 전체 (마태복음~요한계시록)
+      const ix = await loadIndex(readId()); chapters = [];
+      for (const bk of ix.books.filter(b => b.index >= 39)) chapters.push(...(await loadBook(readId(), bk.index)).filter(c => c && c.length));
+    } else chapters = kind === 'chapter' ? [readItems()] : (await loadBook(readId(), B.book)).filter(c => c && c.length);
     for (let c = 0; c < chapters.length && !DL.cancel && !hard; c++) {
-      const r = await downloadVerses(chapters[c], (d, t) => { label.textContent = `⏳ ${kind === 'book' ? `${c + 1}/${chapters.length}장 · ` : ''}${d}/${t} 받는 중 (누르면 중지)`; });
+      const r = await downloadVerses(chapters[c], (d, t) => { label.textContent = `⏳ ${kind !== 'chapter' ? `${c + 1}/${chapters.length}장 · ` : ''}${d}/${t} 받는 중 (누르면 중지)`; });
       failed += r.failed; hard ||= r.hard; total += r.total; done += r.done;
     }
   } catch (e) { failed++; toast('받기 실패: ' + e.message.slice(0, 100), 'warn', 5000); }
   const cancelled = DL.cancel; DL.running = false; DL.cancel = false;
   toast(hard ? 'Gemini 음성 사용 한도에 걸려 멈췄어요. 받은 부분은 저장됐어요 (한도가 풀리면 이어서 받을 수 있어요)' : failed ? `${failed}개 구간을 받지 못했어요. 다시 누르면 이어서 받아요` : cancelled ? '중지했어요. 받은 부분은 저장됐어요' : '✓ 저장 완료! 이제 바로 재생돼요', hard || failed ? 'warn' : 'ok', 6000);
-  bb.textContent = '📚 이 책 전체 받기'; await refreshDl(); updateStoreInfo();
+  bb.textContent = '📚 이 책 전체 받기'; $('#dlNT').textContent = '✝ 신약 전체 받기'; await refreshDl(); updateStoreInfo();
 }
 // ---------- 화면을 꺼도 듣기: 미디어 플레이어(<audio>) ----------
 // 웹 오디오(AudioContext)는 화면이 잠기면 멈추지만, <audio> 요소는 잠금 화면·다른 앱 사용 중에도 계속 재생되고 잠금 화면 컨트롤을 지원함.
@@ -1310,6 +1314,24 @@ $('#resumePlay').onclick = () => startBookPlayer(true);
 PL.init(); updateResume();
 $('#dlChapter').onclick = () => runDownload('chapter');
 $('#dlBook').onclick = () => runDownload('book');
+$('#dlNT').onclick = async () => {
+  if (!DL.running) {
+    let est = ''; try { const e = await navigator.storage?.estimate?.(); if (e?.quota) est = ` (남은 저장공간 약 ${Math.round((e.quota - e.usage) / 1e6)}MB)`; } catch {}
+    if (!confirm(`신약 전체(${READ_NAME[S.readLang]}) 음성을 받아요. 용량이 크고(대략 수백 MB) 시간이 오래 걸리며 Gemini 사용량을 많이 써요${est}. 한도에 걸리면 멈추고, 다시 누르면 이어서 받아요. 시작할까요?`)) return;
+  }
+  runDownload('nt');
+};
+$('#dlText').onclick = async () => {                          // 성경 글자(3종)를 미리 저장 → 오프라인에서도 열림
+  const b = $('#dlText'); if (b.dataset.busy) return; b.dataset.busy = 1; let n = 0, tot = 0, fail = 0;
+  try {
+    for (const bi of BIBLES) { const ix = await loadIndex(bi.id); tot += ix.books.length; }
+    for (const bi of BIBLES) for (const bk of (await loadIndex(bi.id)).books) {
+      try { await loadBook(bi.id, bk.index); } catch { fail++; } b.textContent = `⏳ ${++n}/${tot} 받는 중…`;
+    }
+  } catch (e) { fail++; }
+  delete b.dataset.busy; b.textContent = '📖 성경 글자 전부 저장 (오프라인)';
+  toast(fail ? `${fail}권을 받지 못했어요. 다시 눌러 주세요` : '✓ 개역한글·NKJV·텔루구어 글자를 모두 저장했어요 (인터넷 없이도 열려요)', fail ? 'warn' : 'ok', 5000);
+};
 $('#clearStore').onclick = async () => {
   if (!confirm('저장된 음성을 모두 지울까요? 다시 들으려면 새로 만들어야 해요.')) return;
   await AudioDB.clear(); GT.cache.clear(); updateStoreInfo(); refreshDl(); toast('저장된 음성을 지웠어요', 'ok', 2500);
@@ -1389,7 +1411,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v32';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
