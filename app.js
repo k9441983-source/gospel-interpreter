@@ -178,8 +178,10 @@ function renderModelInfo() {
 
 async function gemini(body, attempt = 0) {
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
-  if (/flash/.test(S.model) && !body.__noThink) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
   const model = S.model; let r;
+  const rejected = k => localStorage.getItem(`reject:${k}:${model}`) === '1';          // 이 모델이 이미 거부한 옵션인지
+  if (/flash/.test(model) && !body.__noThink && !rejected('think')) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
+  if (rejected('schema') && body.generationConfig?.responseSchema) { body = {...body, generationConfig: {...body.generationConfig}}; delete body.generationConfig.responseSchema; }
   try {
     r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
@@ -200,12 +202,23 @@ async function gemini(body, attempt = 0) {
       }
       if (S.model !== model) { renderModelInfo(); return gemini(body, attempt + 1); }
     }
-    if (attempt < 2 && r.status === 400 && /thinking/i.test(msg)) { body = {...body, __noThink: true}; if (body.generationConfig) { body.generationConfig = {...body.generationConfig}; delete body.generationConfig.thinkingConfig; } return gemini(body, attempt + 1); }
-    throw new Error(`Gemini 오류 (${r.status}): ${msg}`);
+    if (attempt < 3 && r.status === 400) {                                  // 일부 모델이 거부하는 옵션을 단계적으로 빼고 재시도
+      const gc = {...(body.generationConfig || {})};
+      let dropped = '';
+      if (gc.thinkingConfig) { delete gc.thinkingConfig; dropped = 'think'; }          // 1단계: 추론 생략 옵션 제거
+      else if (gc.responseSchema) { delete gc.responseSchema; dropped = 'schema'; }    // 2단계: 응답 스키마 제거(JSON 형식은 유지)
+      if (dropped) {
+        const res = await gemini({...body, __noThink: true, generationConfig: gc}, attempt + 1);
+        localStorage.setItem(`reject:${dropped}:${model}`, '1');                         // 성공했으면 이 모델은 해당 옵션을 거부하는 것으로 기억
+        return res;
+      }
+    }
+    const det = data.error?.details ? ' ' + JSON.stringify(data.error.details).slice(0, 240) : '';
+    throw new Error(`Gemini 오류 (${r.status}): ${msg}${det} [모델: ${model}]`);
   }
   const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).find(Boolean);
   if (!text) throw new Error('Gemini 응답을 해석하지 못했습니다.');
-  return JSON.parse(text);
+  return JSON.parse(text.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, ''));
 }
 
 function interpret(wav, langKey) {
@@ -652,20 +665,34 @@ async function renderBible() {
   $('.tab.active').scrollTop = 0;
   if (S.showPron) fillPron(token);
 }
+// 한 요청이 400으로 실패하면 반으로 나눠 다시 시도해서, 문제가 되는 절 하나 때문에 나머지가 막히지 않게 함
+async function pronFor(chunk, stat) {
+  try { return await koreanPronunciation(chunk, 'telugu'); }
+  catch (e) {
+    if (!/\(400\)|올바르지/.test(e.message)) throw e;
+    if (chunk.length === 1) { stat.failed++; stat.last = e.message; return ['']; }
+    const h = chunk.length >> 1;
+    return (await pronFor(chunk.slice(0, h), stat)).concat(await pronFor(chunk.slice(h), stat));
+  }
+}
 async function fillPron(token) {
-  const missing = curTe.filter(t => t && !PCACHE.get(t));
+  const missing = [...new Set(curTe.filter(t => t && !PCACHE.get(t)))];
   const apply = () => document.querySelectorAll('.pr').forEach(el => { const c = PCACHE.get(el.dataset.te); if (c) el.textContent = c; });
   apply();
   if (!missing.length || !S.apiKey) return;
   $('#pronSpin').hidden = false;
+  const stat = {failed: 0, last: ''};
   try {
-    for (let i = 0; i < missing.length; i += 20) {
+    const chunks = []; for (let i = 0; i < missing.length; i += 10) chunks.push(missing.slice(i, i + 10));
+    for (let g = 0; g < chunks.length; g += 3) {                              // 10절씩, 3개 요청을 동시에
       if (token !== B.token) break;
-      const chunk = missing.slice(i, i + 20);
-      const out = await koreanPronunciation(chunk, 'telugu');
-      chunk.forEach((t, j) => PCACHE.set(t, out[j]));
-      if (token === B.token) apply();
+      await Promise.all(chunks.slice(g, g + 3).map(async chunk => {
+        const out = await pronFor(chunk, stat);
+        chunk.forEach((t, j) => { if (out[j]) PCACHE.set(t, out[j]); });
+        if (token === B.token) apply();
+      }));
     }
+    if (stat.failed && token === B.token) show($('#berr'), `${stat.failed}개 절의 발음은 만들지 못했습니다 (${stat.last.slice(0, 120)})`);
   } catch (e) { if (token === B.token) show($('#berr'), e.message); }
   $('#pronSpin').hidden = true;
 }
