@@ -478,7 +478,7 @@ class GeminiLive {
     for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff; }
     this.send({realtimeInput: {audio: {data: b64(new Uint8Array(pcm.buffer)), mimeType: 'audio/pcm;rate=16000'}}});
   }
-  endActivity() { this.send({realtimeInput: {activityEnd: {}}}); this.speaking = false; this.pre = []; this.h.onActivityEnd?.(); }
+  endActivity() { this.send({realtimeInput: {activityEnd: {}}}); this.speaking = false; this.pre = []; this.cand = 0; this.h.onActivityEnd?.(); }
   // 마이크 한 조각(약 43ms) 처리: 재생 중 차단 → 말 시작/끝 감지 → 전송
   frame(d) {
     const ms = d.length / this.ictx.sampleRate * 1000;
@@ -502,11 +502,12 @@ class GeminiLive {
     this.h.onLevel(Math.min(1, rms * 6));
     if (!this.ws || this.ws.readyState !== 1 || !this.ready) return;
     if (this.mode !== 'manual') return this.sendAudio(d);                    // 서버가 말 끝을 판단하는 모드
-    const speech = rms > Math.max(0.015, this.noise * 3);
+    const speech = rms > Math.max(0.02, this.noise * 3.5);
     if (!speech) this.noise = this.noise * 0.95 + rms * 0.05;                // 주변 소음에 적응
     if (!this.speaking) {
-      this.pre.push(d); if (this.pre.length > 5) this.pre.shift();            // 말 시작 직전 약 0.2초 보존
-      if (speech) { this.send({realtimeInput: {activityStart: {}}}); this.pre.forEach(x => this.sendAudio(x)); this.pre = []; this.speaking = true; this.segMs = 0; this.silMs = 0; }
+      this.pre.push(d); if (this.pre.length > 9) this.pre.shift();            // 말 시작 직전 약 0.4초 보존
+      this.cand = speech ? (this.cand || 0) + 1 : Math.max(0, (this.cand || 0) - 1);   // 큰 소리가 약 0.2초 이상 이어질 때만 말로 인정
+      if (this.cand >= 5) { this.cand = 0; this.send({realtimeInput: {activityStart: {}}}); this.pre.forEach(x => this.sendAudio(x)); this.pre = []; this.speaking = true; this.segMs = 0; this.silMs = 0; }
       return;
     }
     this.sendAudio(d); this.segMs += ms; this.silMs = speech ? 0 : this.silMs + ms;
@@ -596,6 +597,8 @@ function onSegment(wav) {
   });
 }
 // Live 모드: 한 번의 발화(turn)를 카드 하나로 표시
+// 모델이 '말 없음'을 나타내려고 내보내는 <no speech>, {pause}, [BLANK_AUDIO] 같은 제어 문구는 번역이 아니므로 제거
+const cleanOut = s => s.replace(/<[^>]*>?|\{[^}]*\}?|\[[^\]]*\]?/g, '').replace(/\s{2,}/g, ' ').trim();
 function makeLiveHandlers(langKey) {
   let card = null, lastEnd = 0;
   const open = () => {
@@ -607,8 +610,9 @@ function makeLiveHandlers(langKey) {
     el.append(head, inp, hr, tr, pron, en);
     const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 기기 음성으로 다시 듣기';
     b.onclick = () => { TTS.unlock(); TTS.speak(tr.textContent, langKey, $('#warn')); };
+    el.hidden = true;                                       // 번역문이 실제로 나올 때까지 숨김 (소음·무음 턴이 화면에 뜨지 않게)
     el.append(b); $('#entries').prepend(el); renderHint();
-    return card = {inp, tr, pron, en, head, text: ''};
+    return card = {el, inp, tr, pron, en, head, raw: '', text: ''};
   };
   return {
     onLevel: lv => $('#mic').style.setProperty('--lvl', lv.toFixed(2)),
@@ -617,12 +621,14 @@ function makeLiveHandlers(langKey) {
     onActivityEnd: () => { lastEnd = performance.now(); },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
-      const c = open(); c.text += t; c.tr.textContent = c.text;
+      const c = open(); c.raw += t; c.text = cleanOut(c.raw);
+      if (!c.text) return;                                      // 제어 문구뿐이면 무시
+      c.tr.textContent = c.text; c.el.hidden = false;
       if (!c.shown && (lastEnd || c.t0)) { c.shown = true; c.head.textContent = `인식된 말씀 (실시간) · ⏱ 말 끝→번역 ${((performance.now() - (lastEnd || c.t0)) / 1000).toFixed(1)}초`; }
     },
     onTurnEnd: () => {
       const c = card; card = null; if (!c) return;
-      if (!c.text.trim()) { c.tr.parentElement.remove(); return; }
+      if (!c.text.trim()) { c.el.remove(); renderHint(); return; }
       if (!S.geminiVoice && S.autoSpeak) TTS.enqueue(c.text, langKey, $('#warn'));
       if (langKey === 'both' && isTelugu(c.inp.textContent))               // 텔루구어로 말함 → 영어 번역도 추가
         englishOf(c.inp.textContent).then(t => { if (t) c.en.textContent = '🇬🇧 ' + t; }).catch(() => {});
@@ -782,7 +788,7 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v20';
+const APP_VERSION = 'v21';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -847,4 +853,11 @@ $('#copyDiag').onclick = async () => { try { await navigator.clipboard.writeText
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
 $('#appVer').textContent = APP_VERSION; renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  const had = !!navigator.serviceWorker.controller; let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !reloaded && !live) { reloaded = true; location.reload(); } });   // 새 버전이 설치되면 자동으로 새로고침 (통역 중에는 제외)
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });   // 앱으로 돌아올 때마다 새 버전 확인
+  }).catch(() => {});
+}
