@@ -7,7 +7,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="복음 통역">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#1f6feb">
+<meta name="theme-color" content="#f5f6fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0d14" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="style.css">
@@ -18,15 +20,18 @@
   <!-- 통역 -->
   <section id="tab-translate" class="tab active">
     <header><h1>복음 통역</h1>
-      <div class="hdrsel"><select id="speed" aria-label="속도"><option value="live">⚡⚡ 실시간(Live)</option><option value="fast">⚡ 문장 단위</option><option value="accurate">🎯 정확</option></select><select id="target" aria-label="번역 언어"></select></div></header>
+      <div class="hdrsel"><select id="speed" aria-label="속도"><option value="live">⚡ 실시간</option><option value="fast">문장 단위</option><option value="accurate">정확 우선</option></select><select id="target" aria-label="번역 언어"></select></div></header>
     <div class="toolrow"><button id="speakToggle" class="btn" aria-label="읽어주기"></button></div>
     <div id="warn" class="warn" hidden></div>
     <div id="err" class="err" hidden></div>
     <div id="entries"><p class="hint" id="hint"></p></div>
     <div class="bar">
       <div class="meter" id="meter" hidden><i></i></div>
-      <button id="mic" aria-label="녹음"><span id="micIcon">🎤</span></button>
-      <div id="micLabel" class="small">눌러서 실시간 통역 시작</div>
+      <button id="mic" aria-label="녹음"><span id="micIcon">
+        <svg class="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        <svg class="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></svg>
+      </span></button>
+      <div><span id="micLabel">눌러서 실시간 통역 시작</span></div>
     </div>
   </section>
 
@@ -36,7 +41,7 @@
     <div class="seg" id="primarySeg"></div>
     <div class="row">
       <select id="book"></select>
-      <div class="stepper"><button id="chPrev">−</button><span id="chLabel">3장</span><button id="chNext">＋</button></div>
+      <div class="stepper"><button id="chPrev" aria-label="이전 장">−</button><span id="chLabel">3장</span><button id="chNext" aria-label="다음 장">＋</button></div>
     </div>
     <div class="row">
       <button id="playChapter" class="btn">▶ 장 전체 텔루구어로 듣기</button>
@@ -50,36 +55,55 @@
   <!-- 설정 -->
   <section id="tab-settings" class="tab">
     <header><h1>설정</h1></header>
-    <label>Gemini API 키 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">받기</a>
-      <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza..."></label>
-    <label>모델 직접 지정 (비워 두면 통역 화면의 속도 선택을 따름) <input id="model" autocapitalize="off" spellcheck="false" placeholder="예: gemini-2.5-flash"></label>
-    <label>Live 모델 직접 지정 (비워 두면 자동) <input id="liveModel" autocapitalize="off" spellcheck="false"></label>
-    <label class="check"><input type="checkbox" id="geminiVoice"> Live 통역: Gemini 음성으로 읽기 (끄면 기기 텔루구어 음성)</label>
-    <label>번역 소리가 나는 동안 마이크 (폰 스피커 소리가 다시 인식되는 것 방지)
-      <select id="echoMode"><option value="smart">스마트 — 번역 소리는 걸러내고 큰 목소리만 인식 (추천)</option><option value="mute">완전 차단 — 번역 소리가 끝날 때까지 안 들음</option><option value="off">끄기 — 이어폰 사용 시</option></select></label>
-    <label class="check"><input type="checkbox" id="autoSpeak"> 번역을 소리로 읽어주기 (끄면 글자로만 표시)</label>
-    <label class="check"><input type="checkbox" id="showPron"> 한글 발음 표시</label>
-    <label>읽어주는 목소리
-      <select id="voiceEngine"><option value="gemini">Gemini 음성 — 자연스럽고 목소리 선택 가능 (추천)</option><option value="device">기기 음성 — 인터넷 없이, 빠름</option></select></label>
-    <label>Gemini 목소리 <select id="gvoice"></select></label>
-    <label>기기 음성 높낮이 (낮출수록 차분하게 들림) <input id="pitch" type="range" min="0.6" max="1.2" step="0.05"></label>
-    <label>기기 음성 읽는 속도 <input type="range" id="rate" min="0.5" max="1.2" step="0.05"></label>
-    <button id="testKey" class="btn">Gemini 연결 테스트 (최신 모델 자동 찾기)</button>
-    <div id="modelInfo" class="small"></div>
-    <div id="keyResult" class="small"></div>
-    <button id="runDiag" class="btn">🔍 전체 진단 (오류가 날 때 눌러 주세요)</button>
-    <pre id="diag" hidden></pre><button id="copyDiag" class="btn" hidden>진단 결과 복사</button>
-    <button id="testVoice" class="btn">🔊 목소리 미리듣기 (텔루구어)</button>
-    <div id="swarn" class="warn" hidden></div>
-    <p class="small">API 키는 이 기기의 브라우저에만 저장되며 Google Gemini로만 전송됩니다. 텔루구어 음성이 없으면 iPhone 설정 &gt; 손쉬운 사용 &gt; 말하기 콘텐츠 &gt; 음성 &gt; 텔루구어에서 내려받으세요.</p>
-    <p class="small">앱 버전 <span id="appVer"></span></p>
-    <p class="small">성경: NKJV(© Thomas Nelson), 개역한글(1961), Telugu BSI 1880. 번역·발음은 AI가 만들므로 오류가 있을 수 있습니다.</p>
+
+    <div class="gtitle">연결</div>
+    <div class="group">
+      <label class="field"><span class="lbl">Gemini API 키 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">키 받기 ↗</a></span>
+        <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza..."></label>
+      <button id="testKey" class="btn wide">Gemini 연결 테스트 (최신 모델 자동 찾기)</button>
+      <div id="keyResult" class="small note"></div>
+      <div id="modelInfo" class="small note"></div>
+    </div>
+
+    <div class="gtitle">통역</div>
+    <div class="group">
+      <label class="rowset"><span class="t">번역을 소리로 읽어주기<small>끄면 글자로만 보여 줍니다</small></span><input type="checkbox" class="switch" id="autoSpeak"></label>
+      <label class="rowset"><span class="t">한글 발음 표시<small>텔루구어 아래에 한글로 읽는 법을 보여 줍니다</small></span><input type="checkbox" class="switch" id="showPron"></label>
+      <label class="rowset"><span class="t">Live 통역: Gemini 음성으로 읽기<small>끄면 선택한 읽어주는 목소리로 읽습니다</small></span><input type="checkbox" class="switch" id="geminiVoice"></label>
+      <label class="field"><span class="lbl">번역 소리가 나는 동안 마이크</span>
+        <select id="echoMode"><option value="smart">스마트 — 번역 소리는 걸러내고 큰 목소리만 인식 (추천)</option><option value="mute">완전 차단 — 번역 소리가 끝날 때까지 안 들음</option><option value="off">끄기 — 이어폰 사용 시</option></select>
+        <small>폰 스피커의 번역 소리가 다시 인식되는 것을 막습니다.</small></label>
+    </div>
+
+    <div class="gtitle">목소리</div>
+    <div class="group">
+      <label class="field"><span class="lbl">읽어주는 목소리</span>
+        <select id="voiceEngine"><option value="gemini">Gemini 음성 — 자연스럽고 목소리 선택 가능 (추천)</option><option value="device">기기 음성 — 인터넷 없이, 빠름</option></select></label>
+      <label class="field"><span class="lbl">Gemini 목소리</span><select id="gvoice"></select></label>
+      <label class="field"><span class="lbl">기기 음성 높낮이 <span>낮출수록 차분</span></span><input id="pitch" type="range" min="0.6" max="1.2" step="0.05"></label>
+      <label class="field"><span class="lbl">기기 음성 읽는 속도</span><input type="range" id="rate" min="0.5" max="1.2" step="0.05"></label>
+      <button id="testVoice" class="btn wide">🔊 목소리 미리듣기 (텔루구어)</button>
+      <div id="swarn" class="warn" hidden></div>
+    </div>
+
+    <div class="gtitle">고급</div>
+    <div class="group">
+      <label class="field"><span class="lbl">모델 직접 지정</span><input id="model" autocapitalize="off" spellcheck="false" placeholder="비워 두면 자동 선택"></label>
+      <label class="field"><span class="lbl">Live 모델 직접 지정</span><input id="liveModel" autocapitalize="off" spellcheck="false"></label>
+      <button id="runDiag" class="btn wide">🔍 전체 진단 (오류가 날 때 눌러 주세요)</button>
+      <pre id="diag" hidden></pre>
+      <button id="copyDiag" class="btn wide" hidden>진단 결과 복사</button>
+    </div>
+
+    <p class="foot">API 키는 이 기기의 브라우저에만 저장되며 Google Gemini로만 전송됩니다. 텔루구어 기기 음성이 없으면 iPhone 설정 &gt; 손쉬운 사용 &gt; 말하기 콘텐츠 &gt; 음성 &gt; 텔루구어에서 내려받으세요.</p>
+    <p class="foot">성경: NKJV(© Thomas Nelson), 개역한글(1961), Telugu BSI 1880. 번역·발음은 AI가 만들므로 오류가 있을 수 있습니다.</p>
+    <p class="foot">앱 버전 <span id="appVer"></span></p>
   </section>
 </main>
 <nav>
-  <button data-tab="translate" class="on">🎙<span>통역</span></button>
-  <button data-tab="bible">📖<span>성경</span></button>
-  <button data-tab="settings">⚙️<span>설정</span></button>
+  <button data-tab="translate" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>통역</span></button>
+  <button data-tab="bible"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10.3 5 7.8 4.5 4.5 4.5v13c3.3 0 5.8.5 7.5 2 1.7-1.5 4.2-2 7.5-2v-13c-3.3 0-5.8.5-7.5 2zM12 6.5v13"/></svg><span>성경</span></button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg><span>설정</span></button>
 </nav>
 <script src="app.js"></script>
 </body>

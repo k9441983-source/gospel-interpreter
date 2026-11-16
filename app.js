@@ -569,13 +569,13 @@ function addEntry(r, langKey, secs) {
 }
 function setPhase(p) {
   $('#mic').classList.toggle('rec', p === 'live');
-  $('#micIcon').textContent = p === 'live' ? '⏹' : '🎤';
-  $('#micLabel').textContent = p === 'live' ? (S.speed === 'live' ? '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)' : '🔴 실시간 통역 중… 멈추려면 누르세요') : '눌러서 실시간 통역 시작';
+  $('#micLabel').textContent = p === 'live' ? (S.speed === 'live' ? 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)' : '실시간 통역 중… 멈추려면 누르세요') : '눌러서 실시간 통역 시작';
   $('#meter').hidden = p !== 'live';
+  if (p !== 'live') $('#mic').style.setProperty('--lvl', '0');
   $('#mic').dataset.phase = p;
 }
 function status() {
-  if ($('#mic').dataset.phase === 'live') $('#micLabel').textContent = '🔴 실시간 통역 중' + (pending ? ` · 번역 중 ${pending}` : '') + ' — 멈추려면 누르세요';
+  if ($('#mic').dataset.phase === 'live') $('#micLabel').textContent = '실시간 통역 중' + (pending ? ` · 번역 중 ${pending}` : '') + ' — 멈추려면 누르세요';
 }
 function onSegment(wav) {
   const langKey = S.target, t0 = performance.now();
@@ -611,9 +611,9 @@ function makeLiveHandlers(langKey) {
     return card = {inp, tr, pron, en, head, text: ''};
   };
   return {
-    onLevel: lv => $('#meter i').style.width = (lv * 100) + '%',
-    onStatus: s => { if (live) $('#micLabel').textContent = s || '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
-    onMute: (m, mode) => { if (live) $('#micLabel').textContent = m ? (mode === 'smart' ? '🔊 번역 재생 중 — 큰 목소리만 인식' : '🔇 번역 재생 중 — 마이크 잠시 멈춤') : '🔴 Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
+    onLevel: lv => $('#mic').style.setProperty('--lvl', lv.toFixed(2)),
+    onStatus: s => { if (live) $('#micLabel').textContent = s || 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
+    onMute: (m, mode) => { if (live) $('#micLabel').textContent = m ? (mode === 'smart' ? '🔊 번역 재생 중 — 큰 목소리만 인식' : '🔇 번역 재생 중 — 마이크 잠시 멈춤') : 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onActivityEnd: () => { lastEnd = performance.now(); },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
@@ -646,7 +646,7 @@ $('#mic').onclick = async () => {
     catch (e) { live = null; setPhase('idle'); show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
     return;
   }
-  const l = new Live(onSegment, lv => $('#meter i').style.width = (lv * 100) + '%');
+  const l = new Live(onSegment, lv => $('#mic').style.setProperty('--lvl', lv.toFixed(2)));
   try { await l.start(); live = l; setPhase('live'); }
   catch (e) { show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
 };
@@ -782,7 +782,7 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v20';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
