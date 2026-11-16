@@ -32,6 +32,10 @@ const S = {
   set autoSpeak(v) { localStorage.setItem('autoSpeak', v ? '1' : '0'); },
   get showPron() { return localStorage.getItem('showPron') !== '0'; },
   set showPron(v) { localStorage.setItem('showPron', v ? '1' : '0'); },
+  get lite() { return localStorage.getItem('lite') === '1'; },
+  set lite(v) { localStorage.setItem('lite', v ? '1' : '0'); },
+  get liteAuto() { return localStorage.getItem('liteAuto') === '1'; },
+  set liteAuto(v) { localStorage.setItem('liteAuto', v ? '1' : '0'); },
   get voiceEngine() { return localStorage.getItem('voiceEngine') || 'gemini'; },
   set voiceEngine(v) { localStorage.setItem('voiceEngine', v); },
   get gvoice() { return localStorage.getItem('gvoice') || 'Charon'; },
@@ -170,12 +174,12 @@ const TTS = {
       u.lang = Lk.locale; if (v) u.voice = v;
       u.rate = S.rate; u.pitch = S.pitch;
       u.onend = u.onerror = () => { if (!speechSynthesis.speaking) $('#stopBtn').hidden = true; };
-      speechSynthesis.speak(u);
+      speechSynthesis.speak(u); devBusy = true; devPoll = performance.now();          // 시작 즉시 재생 중으로 표시
     }
     if (warnEl) show(warnEl, missing ? `${missing.name} 음성이 설치되어 있지 않을 수 있습니다. iPhone 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성에서 내려받아 주세요.` : '');
     $('#stopBtn').hidden = false;
   },
-  stop() { speechSynthesis.cancel(); GT.flush(); $('#stopBtn').hidden = true; },
+  stop() { speechSynthesis.cancel(); GT.flush(); devBusy = false; devPoll = performance.now(); $('#stopBtn').hidden = true; },
 };
 if ('speechSynthesis' in window) { TTS.load(); speechSynthesis.onvoiceschanged = () => TTS.load(); }
 $('#stopBtn').onclick = () => TTS.stop();
@@ -183,9 +187,11 @@ $('#stopBtn').onclick = () => TTS.stop();
 // ---------- 폰 스피커 소리가 마이크로 다시 들어가는 것 방지 ----------
 let lastEcho = -1e9;
 // 'playing' = 번역 소리가 나는 중, 'tail' = 끝난 직후 0.25초(잔향), 'none' = 소리 없음
+let devPoll = -1e9, devBusy = false;
 function echoState(geminiPlaying) {
   const now = performance.now();
-  if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending || GT.active()) { lastEcho = now; return 'playing'; }
+  if (now - devPoll > 250) { devPoll = now; devBusy = speechSynthesis.speaking || speechSynthesis.pending; }   // 기기 음성 상태 조회는 비싸므로 초당 4번만
+  if (geminiPlaying || devBusy || GT.active()) { lastEcho = now; return 'playing'; }
   return now - lastEcho < 250 ? 'tail' : 'none';
 }
 // 문장 단위 모드용: 설정이 꺼져 있지 않으면 번역 소리가 나는 동안 입력을 완전히 무시
@@ -565,14 +571,15 @@ function addEntry(r, langKey, secs) {
   const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 다시 듣기';
   b.onclick = () => { TTS.unlock(); TTS.speak(r.translation, langKey, $('#warn')); };
   el.append(b);
-  $('#entries').prepend(el); renderHint();
+  $('#entries').prepend(el); pruneCards(); renderHint();
   pron.en = en; return pron;
 }
 function setPhase(p) {
   $('#mic').classList.toggle('rec', p === 'live');
+  document.documentElement.classList.toggle('live-lite', p === 'live');       // 통역 중에는 화면 효과를 줄여 부드럽게 (끝나면 원래대로)
   $('#micLabel').textContent = p === 'live' ? (S.speed === 'live' ? 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)' : '실시간 통역 중… 멈추려면 누르세요') : '눌러서 실시간 통역 시작';
   $('#meter').hidden = p !== 'live';
-  if (p !== 'live') $('#mic').style.setProperty('--lvl', '0');
+  if (p !== 'live') { lvlV = 0; lvlT = 0; setLevel(0); const r = document.querySelector('#micRing'); r.style.transform = 'scale(1)'; r.style.opacity = '0'; (meterBar ||= document.querySelector('#meter i')).style.transform = 'scaleX(0)'; }
   $('#mic').dataset.phase = p;
 }
 function status() {
@@ -597,6 +604,18 @@ function onSegment(wav) {
   });
 }
 // Live 모드: 한 번의 발화(turn)를 카드 하나로 표시
+// 카드가 계속 쌓이면 화면이 무거워지므로 최근 40개만 유지
+function pruneCards() { const cs = $('#entries').querySelectorAll('.card'); for (let i = 40; i < cs.length; i++) cs[i].remove(); if (entries.length > 40) entries.length = 40; }
+// 마이크 크기 링 갱신: 초당 약 12번 이하, 변화가 클 때만 (스타일 갱신 부담 줄이기)
+let lvlT = -1e9, lvlV = 0, ringEl = null, meterBar = null;
+function setLevel(lv) {
+  const now = performance.now();
+  if (now - lvlT < 80 || Math.abs(lv - lvlV) < 0.04) return;
+  lvlT = now; lvlV = lv;
+  if (document.documentElement.classList.contains('lite')) { (meterBar ||= document.querySelector('#meter i')).style.transform = `scaleX(${lv.toFixed(2)})`; return; }
+  const r = ringEl ||= document.querySelector('#micRing');
+  r.style.transform = `scale(${(1 + lv * 0.42).toFixed(3)})`; r.style.opacity = Math.min(1, lv * 1.2).toFixed(2);   // 전용 요소만 바꿈 → 스타일 연쇄 계산 없음
+}
 // 모델이 '말 없음'을 나타내려고 내보내는 <no speech>, {pause}, [BLANK_AUDIO] 같은 제어 문구는 번역이 아니므로 제거
 const cleanOut = s => s.replace(/<[^>]*>?|\{[^}]*\}?|\[[^\]]*\]?/g, '').replace(/\s{2,}/g, ' ').trim();
 function makeLiveHandlers(langKey) {
@@ -611,11 +630,11 @@ function makeLiveHandlers(langKey) {
     const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 기기 음성으로 다시 듣기';
     b.onclick = () => { TTS.unlock(); TTS.speak(tr.textContent, langKey, $('#warn')); };
     el.hidden = true;                                       // 번역문이 실제로 나올 때까지 숨김 (소음·무음 턴이 화면에 뜨지 않게)
-    el.append(b); $('#entries').prepend(el); renderHint();
+    el.append(b); $('#entries').prepend(el); pruneCards(); renderHint();
     return card = {el, inp, tr, pron, en, head, raw: '', text: ''};
   };
   return {
-    onLevel: lv => $('#mic').style.setProperty('--lvl', lv.toFixed(2)),
+    onLevel: setLevel,
     onStatus: s => { if (live) $('#micLabel').textContent = s || 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onMute: (m, mode) => { if (live) $('#micLabel').textContent = m ? (mode === 'smart' ? '🔊 번역 재생 중 — 큰 목소리만 인식' : '🔇 번역 재생 중 — 마이크 잠시 멈춤') : 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onActivityEnd: () => { lastEnd = performance.now(); },
@@ -652,7 +671,7 @@ $('#mic').onclick = async () => {
     catch (e) { live = null; setPhase('idle'); show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
     return;
   }
-  const l = new Live(onSegment, lv => $('#mic').style.setProperty('--lvl', lv.toFixed(2)));
+  const l = new Live(onSegment, setLevel);
   try { await l.start(); live = l; setPhase('live'); }
   catch (e) { show($('#err'), e.name === 'NotAllowedError' ? '마이크 권한이 필요합니다. Safari 설정에서 마이크를 허용해 주세요.' : e.message); }
 };
@@ -787,8 +806,24 @@ async function fillPron(token) {
 $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('#bwarn')); };
 
 
+
+// ---------- 화면 부담 자동 감지: 프레임이 자주 늦으면 효과를 줄여서 부드럽게 ----------
+function applyLite() { document.documentElement.classList.toggle('lite', S.lite || S.liteAuto); const el = $('#lite'); if (el) el.checked = S.lite || S.liteAuto; }
+(function jankWatch() {
+  if (S.lite || S.liteAuto) return;
+  let last = performance.now(), slow = 0, t0 = last, running = true;
+  const tick = t => {
+    if (!running) return;
+    const d = t - last; last = t;
+    if (!document.hidden && d > 80 && d < 2000) slow++;                      // 한 프레임이 0.08초 넘게 걸림(렉)
+    if (t - t0 > 12000) { if (slow >= 10 && $('#mic').dataset.phase === 'live') { S.liteAuto = true; applyLite(); show($('#warn'), '화면이 버거워서 효과를 줄였어요. 설정에서 다시 켤 수 있어요.'); running = false; return; } slow = 0; t0 = t; }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+})();
+
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v22';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -810,6 +845,8 @@ async function runDiag() {
     x = await call(`${base}models/${encodeURIComponent(model)}:generateContent`, g(gc));
     log(!x.err && x.r.ok, `${name}: ${fmt(x)}`);
   }
+  const fr = await new Promise(res => { const v = []; let last = performance.now(), n = 0; const tk = t => { v.push(t - last); last = t; if (++n < 90) requestAnimationFrame(tk); else res(v.slice(1)); }; requestAnimationFrame(tk); });
+  log(null, `화면 프레임(1.5초): 평균 ${(fr.reduce((a, b) => a + b, 0) / fr.length).toFixed(1)}ms · 최대 ${Math.max(...fr).toFixed(0)}ms · 효과 줄이기 ${document.documentElement.classList.contains('lite') ? '켜짐' : '꺼짐'}`);
   try { const o = await koreanPronunciation(['దేవుడు ప్రేమించెను'], 'telugu'); log(true, `한글 발음 변환: 정상 → ${o[0]}`); }
   catch (e) { log(false, `한글 발음 변환: ${e.message.slice(0, 260)}`); }
   const live = await new Promise(res => {
@@ -837,6 +874,7 @@ $('#liveModel').onchange = e => { if (e.target.value.trim()) S.liveModel = e.tar
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
 $('#echoMode').onchange = e => S.echoMode = e.target.value;
 $('#autoSpeak').onchange = e => setSpeak(e.target.checked);
+$('#lite').onchange = e => { S.lite = e.target.checked; S.liteAuto = false; applyLite(); };
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
 $('#testKey').onclick = async () => {
@@ -852,7 +890,7 @@ $('#runDiag').onclick = () => runDiag();
 $('#copyDiag').onclick = async () => { try { await navigator.clipboard.writeText($('#diag').textContent); $('#copyDiag').textContent = '복사됨 ✓'; } catch { $('#copyDiag').textContent = '길게 눌러 직접 복사하세요'; } };
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
-$('#appVer').textContent = APP_VERSION; renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
+$('#appVer').textContent = APP_VERSION; applyLite(); renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   const had = !!navigator.serviceWorker.controller; let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !reloaded && !live) { reloaded = true; location.reload(); } });   // 새 버전이 설치되면 자동으로 새로고침 (통역 중에는 제외)

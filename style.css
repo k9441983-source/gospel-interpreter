@@ -21,7 +21,8 @@
 }}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;color:var(--fg);font:16px/1.55 var(--font);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overscroll-behavior:none}
-body{background:radial-gradient(900px 420px at 50% -160px,var(--glow),transparent 70%),var(--bg);background-attachment:fixed}
+body{background:var(--bg)}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(900px 420px at 50% -160px,var(--glow),transparent 70%);transform:translateZ(0)}
 main{height:100%;overflow:hidden}
 button,select,input{font-family:inherit}
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
@@ -31,7 +32,7 @@ button,select,input{font-family:inherit}
 .tab.active{display:block;animation:fade .25s ease}
 #tab-translate{position:relative}
 #tab-translate.active{display:flex;flex-direction:column;padding-bottom:0}
-#entries{flex:1;min-height:0;overflow-y:auto;padding-bottom:calc(290px + env(safe-area-inset-bottom));scroll-behavior:smooth}
+#entries{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:calc(290px + env(safe-area-inset-bottom))}
 header{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px 8px;
   margin:0 -18px;padding:calc(12px + env(safe-area-inset-top)) 18px 10px;
   background:linear-gradient(to bottom,var(--bg) 82%,transparent)}
@@ -73,7 +74,7 @@ input[type=checkbox].switch:checked::before{transform:translateX(20px)}
 .hint{margin:0;padding:34px 12px 10px;text-align:center;white-space:pre-line;color:var(--muted);font-size:15px;line-height:1.75}
 .hint::before{content:"";display:block;width:72px;height:72px;margin:0 auto 18px;border-radius:24px;
   background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='30' viewBox='0 0 24 24' fill='none' stroke='%235b5bf0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='3' width='6' height='11' rx='3'/%3E%3Cpath d='M5 11a7 7 0 0 0 14 0M12 18v3'/%3E%3C/svg%3E") center/30px no-repeat,var(--acc-soft)}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px 14px;margin:12px 0;box-shadow:var(--shadow);animation:rise .4s cubic-bezier(.2,.8,.2,1) both}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px 14px;margin:12px 0;box-shadow:0 1px 2px rgba(15,23,42,.05),0 4px 12px -6px rgba(15,23,42,.14);animation:rise .4s cubic-bezier(.2,.8,.2,1) both;contain:layout paint style}
 .card .small{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--muted)}
 .card .small::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--grad);flex:none}
 .card>div:not([class]){margin-top:6px;font-size:15px;line-height:1.6;color:var(--muted)}
@@ -86,14 +87,16 @@ input[type=checkbox].switch:checked::before{transform:translateX(20px)}
 .bar{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;padding:70px 0 calc(92px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--bg) 52%,transparent);pointer-events:none}
 .bar>*{pointer-events:auto}
 .meter{display:none}
-#mic{--lvl:0;position:relative;width:92px;height:92px;border-radius:50%;border:0;padding:0;display:grid;place-items:center;color:#fff;background:var(--grad);cursor:pointer;
-  box-shadow:0 14px 34px -10px rgba(100,100,245,.65),0 0 0 calc(var(--lvl)*18px) rgba(110,110,250,.2);transition:box-shadow .09s linear,transform .2s,background .3s}
+#mic{position:relative;width:92px;height:92px;border-radius:50%;border:0;padding:0;display:grid;place-items:center;color:#fff;background:var(--grad);cursor:pointer;
+  box-shadow:0 14px 34px -10px rgba(100,100,245,.65);transition:transform .2s,background .3s}
+#micRing{position:absolute;inset:0;border-radius:50%;background:rgba(110,110,250,.28);z-index:-1;pointer-events:none;opacity:0;transform:scale(1);transition:transform .12s ease-out,opacity .12s ease-out;will-change:transform,opacity}
 #mic:active{transform:scale(.95)}
 #mic svg{width:38px;height:38px}
 #mic .i-stop{display:none}
-#mic.rec{background:var(--grad-rec);box-shadow:0 14px 34px -10px rgba(225,29,72,.65),0 0 0 calc(var(--lvl)*20px) rgba(225,29,72,.2)}
+#mic.rec{background:var(--grad-rec);box-shadow:0 14px 34px -10px rgba(225,29,72,.65)}
+#mic.rec #micRing{background:rgba(225,29,72,.26)}
 #mic.rec .i-mic{display:none}#mic.rec .i-stop{display:block}
-#mic.rec::after{content:"";position:absolute;inset:-7px;border-radius:50%;border:2px solid rgba(225,29,72,.45);animation:ping 1.6s ease-out infinite}
+#mic.rec::after{content:"";position:absolute;inset:-7px;border-radius:50%;border:2px solid rgba(225,29,72,.4);pointer-events:none}
 #micLabel{display:inline-block;margin-top:14px;padding:7px 14px;border-radius:999px;background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);font-size:13px;font-weight:600;color:var(--muted)}
 
 /* ───────── 성경 화면 ───────── */
@@ -146,7 +149,7 @@ input[type=checkbox].switch:checked::before{transform:translateX(20px)}
 
 /* ───────── 하단 탭바 (유리 질감, 떠 있는 형태) ───────── */
 nav{position:fixed;z-index:20;left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));bottom:calc(10px + env(safe-area-inset-bottom));
-  display:flex;gap:4px;padding:6px;border-radius:26px;background:var(--glass);-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);
+  display:flex;gap:4px;padding:6px;border-radius:26px;background:var(--glass);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);transform:translateZ(0);
   border:1px solid var(--line);box-shadow:0 18px 40px -16px rgba(15,23,42,.35)}
 nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 0 7px;border:0;border-radius:20px;background:none;color:var(--muted);font-size:11px;font-weight:650;cursor:pointer;transition:background .2s,color .2s}
 nav button svg{width:24px;height:24px}
@@ -158,5 +161,17 @@ nav button.on{background:var(--acc-soft);color:var(--acc-ink)}
 @keyframes ping{0%{transform:scale(.92);opacity:.9}100%{transform:scale(1.28);opacity:0}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .group>.warn{margin:0;border-radius:0}
-#mic.rec~div #micLabel::before{content:"";display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%;background:#e11d48;vertical-align:1px;animation:blink 1.2s ease-in-out infinite}
+#mic.rec~div #micLabel::before{content:"";display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%;background:#e11d48;vertical-align:1px}
 @keyframes blink{50%{opacity:.25}}
+
+/* ───────── 가벼운 화면: 통역 중에는 자동, 설정에서 항상 켤 수도 있음 (애니메이션·흐림·그림자를 꺼서 화면 갱신 부담을 약 절반으로) ───────── */
+html.lite *,html.lite *::before,html.lite *::after,html.live-lite *,html.live-lite *::before,html.live-lite *::after{animation:none!important;transition:none!important}
+html.lite body::before,html.live-lite body::before{display:none}
+html.lite nav,html.live-lite nav{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--surface);transform:none}
+html.lite .card,html.lite .group,html.lite .toolrow .btn,html.lite select,html.lite .stepper,html.lite #micLabel,
+html.live-lite .card,html.live-lite .group,html.live-lite .toolrow .btn,html.live-lite select,html.live-lite .stepper,html.live-lite #micLabel{box-shadow:none}
+html.lite header,html.lite .bar,html.live-lite header,html.live-lite .bar{background:var(--bg)}
+html.lite #micRing{display:none}
+html.lite .meter{display:block;position:absolute;left:50%;top:44px;width:150px;height:4px;margin-left:-75px;border-radius:2px;background:var(--line);overflow:hidden}
+html.lite .meter i{display:block;width:100%;height:100%;background:var(--grad);transform-origin:left;transform:scaleX(0)}
+html.lite #mic.rec::after{display:none}
