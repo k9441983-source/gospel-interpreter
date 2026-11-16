@@ -128,6 +128,7 @@ function b64(bytes) {
 
 // ---------- Gemini ----------
 async function gemini(body) {
+  if (/flash/.test(S.model)) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
   let r;
   try {
@@ -252,19 +253,25 @@ targetSel.onchange = () => { S.target = targetSel.value; renderHint(); };
 renderHint();
 
 // ---------- 성경 탭 ----------
-const bibleData = {};
+const bibleIdx = {}, bookCache = {};
 const B = {primary: 'nkjv', book: 42, chapter: 2, token: 0};
-async function loadBible(id) {
-  if (!bibleData[id]) {
-    let r;
-    try { r = await fetch(`bibles/${id}.json`); }
-    catch (e) { throw new Error(`[성경 파일 ${id} 불러오기 실패] ${e.message} — 네트워크가 끊겼거나 파일이 너무 커서 실패했을 수 있습니다.`); }
-    if (!r.ok) throw new Error(`[성경 파일 ${id}] 서버 응답 ${r.status}`);
-    bibleData[id] = await r.json();
-  }
-  return bibleData[id];
+async function getJSON(path, label) {
+  let r;
+  try { r = await fetch(path); }
+  catch (e) { throw new Error(`[성경 파일 ${label} 불러오기 실패] ${e.message} — 네트워크를 확인하세요.`); }
+  if (!r.ok) throw new Error(`[성경 파일 ${label}] 서버 응답 ${r.status}`);
+  return r.json();
 }
-const verses = (bible, book, ch) => bible?.books.find(b => b.index === book)?.chapters[ch] || [];
+async function loadIndex(id) { return bibleIdx[id] || (bibleIdx[id] = await getJSON(`bibles/${id}/index.json`, id)); }
+// 필요한 책 한 권만 받아온다 (수십~수백 KB)
+async function loadBook(id, book) {
+  const k = id + ':' + book;
+  if (!bookCache[k]) {
+    const has = (await loadIndex(id)).books.some(b => b.index === book);
+    bookCache[k] = has ? await getJSON(`bibles/${id}/${book}.json`, `${id}/${book}`) : [];
+  }
+  return bookCache[k];
+}
 
 const seg = $('#primarySeg');
 BIBLES.forEach(b => {
@@ -281,7 +288,7 @@ async function renderBible() {
   show($('#berr'), '');
   seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.id === B.primary));
   let prim, te;
-  try { [prim, te] = await Promise.all([loadBible(B.primary), loadBible('telugu')]); }
+  try { [prim, te] = await Promise.all([loadIndex(B.primary), loadIndex('telugu')]); }
   catch (e) { return show($('#berr'), e.message); }
   if (token !== B.token) return;
 
@@ -291,12 +298,16 @@ async function renderBible() {
     sel.dataset.bible = B.primary;
   }
   sel.value = B.book;
-  const count = Math.max(prim.books.find(b => b.index === B.book)?.chapters.length || 0,
-                         te.books.find(b => b.index === B.book)?.chapters.length || 0);
+  const count = Math.max(prim.books.find(b => b.index === B.book)?.chapters || 0,
+                         te.books.find(b => b.index === B.book)?.chapters || 0);
   B.chapter = Math.max(0, Math.min(B.chapter, count - 1));
   $('#chLabel').textContent = `${B.chapter + 1}장`;
 
-  const pv = verses(prim, B.book, B.chapter); curTe = verses(te, B.book, B.chapter);
+  let pb, tb;
+  try { [pb, tb] = await Promise.all([loadBook(B.primary, B.book), loadBook('telugu', B.book)]); }
+  catch (e) { return show($('#berr'), e.message); }
+  if (token !== B.token) return;
+  const pv = pb[B.chapter] || []; curTe = tb[B.chapter] || [];
   const box = $('#verses'); box.innerHTML = '';
   const n = Math.max(pv.length, curTe.length);
   for (let i = 0; i < n; i++) {
