@@ -45,10 +45,16 @@
       <select id="book"></select>
       <div class="stepper"><button id="chPrev" aria-label="이전 장">−</button><span id="chLabel">3장</span><button id="chNext" aria-label="다음 장">＋</button></div>
     </div>
+    <div class="small readlbl">듣기 언어 (보는 번역과 별개)</div>
+    <div class="seg readseg" id="readSeg"><button data-lang="korean">🎧 한국어</button><button data-lang="telugu">텔루구어</button><button data-lang="english">English</button></div>
     <div class="row">
       <button id="playChapter" class="btn">▶ 장 전체 텔루구어로 듣기</button>
       <button id="stopBtn" class="btn danger" hidden>■ 정지</button>
     </div>
+    <div class="row">
+      <button id="playBook" class="btn accent" type="button">🎧 화면 꺼도 듣기 (이 책 이어서)</button>
+    </div>
+    <div class="row"><button id="resumePlay" class="btn" type="button" hidden></button></div>
     <div class="row dlrow">
       <button id="dlChapter" class="btn" type="button">⬇ 이 장 미리 받기</button>
       <button id="dlBook" class="btn" type="button">📚 이 책 전체 받기</button>
@@ -119,6 +125,14 @@
     <p class="foot">앱 버전 <span id="appVer"></span></p>
   </section>
 </main>
+<audio id="player" playsinline preload="auto"></audio>
+<div id="playerBar" class="player" hidden>
+  <div class="pl-top"><div id="plTitle" class="pl-title"></div><button id="plClose" class="pl-x" aria-label="닫기">✕</button></div>
+  <input id="plSeek" type="range" min="0" max="1000" value="0" aria-label="재생 위치"><div id="plTime" class="small pl-time">0:00 / 0:00</div>
+  <div class="pl-ctl"><button id="plPrev" aria-label="이전">⏮</button><button id="plBack" aria-label="15초 뒤로">↺ 15</button><button id="plPlay" class="pl-main" aria-label="재생/일시정지">▶</button><button id="plFwd" aria-label="15초 앞으로">15 ↻</button><button id="plNext" aria-label="다음 장">⏭</button></div>
+  <div class="pl-opt"><select id="plRate" aria-label="속도"><option value="0.8">0.8×</option><option value="0.9">0.9×</option><option value="1" selected>1.0×</option><option value="1.15">1.15×</option><option value="1.3">1.3×</option><option value="1.5">1.5×</option></select>
+    <select id="plTimer" aria-label="취침 타이머"><option value="0">타이머 끔</option><option value="15">15분 뒤 멈춤</option><option value="30">30분 뒤 멈춤</option><option value="60">60분 뒤 멈춤</option></select></div>
+</div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <nav>
   <button data-tab="translate" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>통역</span></button>
