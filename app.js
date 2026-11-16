@@ -352,6 +352,7 @@ class GeminiLive {
   async start(langKey) {
     this.langKey = langKey;
     if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
+    try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}   // iOS: 무음 스위치·블루투스 출력에서도 녹음과 재생을 함께 허용
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000});         // 입력(마이크)·출력(Gemini 음성) 분리
     await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
