@@ -12,8 +12,12 @@ const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'}]
 const S = {
   get apiKey() { return localStorage.getItem('apiKey') || ''; },
   set apiKey(v) { localStorage.setItem('apiKey', v.replace(/[^\x21-\x7E]/g, '')); }, // 공백·줄바꿈·한글 등 제거
-  get model() { return localStorage.getItem('model') || 'gemini-2.5-flash'; },
-  set model(v) { localStorage.setItem('model', v.trim()); },
+  // 직접 입력한 모델이 있으면 우선, 없으면 속도 모드에 따라 선택
+  get customModel() { return localStorage.getItem('modelCustom') || ''; },
+  set customModel(v) { localStorage.setItem('modelCustom', v.trim()); },
+  get speed() { return localStorage.getItem('speed') || 'fast'; },
+  set speed(v) { localStorage.setItem('speed', v); },
+  get model() { return this.customModel || (this.speed === 'fast' ? 'gemini-2.5-flash-lite' : 'gemini-2.5-flash'); },
   get target() { return localStorage.getItem('target') || 'telugu'; },
   set target(v) { localStorage.setItem('target', v); },
   get autoSpeak() { return localStorage.getItem('autoSpeak') !== '0'; },
@@ -182,7 +186,7 @@ class Live {
     if (this.cur) {
       this.cur.push(d); this.curMs += ms;
       if (speech) { this.silenceMs = 0; this.speechMs += ms; } else this.silenceMs += ms;
-      if ((this.silenceMs >= 500 && this.speechMs >= 400) || this.curMs >= 15000) this.cut();   // 문장 끝 / 최대 15초
+      if ((this.silenceMs >= 400 && this.speechMs >= 350) || this.curMs >= 15000) this.cut();   // 문장 끝 / 최대 15초
       else if (this.silenceMs >= 1500 && this.speechMs < 400) this.cur = null;                   // 소음만 있었음
     } else {
       this.pre.push(d); if (this.pre.length > 4) this.pre.shift();                              // 말 시작 직전 약 0.3초 보존
@@ -261,6 +265,7 @@ const targetSel = $('#target');
 for (const [k, v] of Object.entries(LANGS)) targetSel.add(new Option(v.name, k));
 targetSel.value = S.target;
 targetSel.onchange = () => { S.target = targetSel.value; renderHint(); };
+const speedSel = $('#speed'); speedSel.value = S.speed; speedSel.onchange = () => { S.speed = speedSel.value; };
 renderHint();
 
 // ---------- 성경 탭 ----------
@@ -361,16 +366,16 @@ async function fillPron(token) {
 $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('#bwarn')); };
 
 // ---------- 설정 탭 ----------
-$('#apiKey').value = S.apiKey; $('#model').value = S.model;
+$('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
 $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
 $('#apiKey').onchange = e => S.apiKey = e.target.value;
-$('#model').onchange = e => S.model = e.target.value || 'gemini-2.5-flash';
+$('#model').onchange = e => S.customModel = e.target.value;
 $('#autoSpeak').onchange = e => S.autoSpeak = e.target.checked;
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#rate').oninput = e => S.rate = parseFloat(e.target.value);
 $('#testKey').onclick = async () => {
   const out = $('#keyResult'); out.textContent = '확인 중…';
-  S.apiKey = $('#apiKey').value; S.model = $('#model').value || 'gemini-2.5-flash';
+  S.apiKey = $('#apiKey').value; S.customModel = $('#model').value;
   try {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.model)}:generateContent`, {
       method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},

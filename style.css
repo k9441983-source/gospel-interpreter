@@ -40,3 +40,4 @@ nav button.on{color:var(--acc)}
 .v .n{color:var(--sub);font-size:12px;margin-right:6px}
 .v .te{color:var(--sub)}.v .pr{color:var(--pron)}
 .v button{border:0;background:none;color:var(--acc);font-size:13px;padding:2px 0}
+.hdrsel{display:flex;gap:6px}.hdrsel select{max-width:50%}
