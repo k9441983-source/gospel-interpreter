@@ -13,6 +13,13 @@ const BIBLES = [{id: 'nkjv', label: 'NKJV'}, {id: 'krv', label: '개역한글'},
 const S = {
   get apiKey() { return localStorage.getItem('apiKey') || ''; },
   set apiKey(v) { localStorage.setItem('apiKey', v.replace(/[^\x21-\x7E]/g, '')); }, // 공백·줄바꿈·한글 등 제거
+  // 예비 키: 기본 키의 '하루 한도'가 다 찼을 때만 대신 사용 (한도가 다시 채워지는 시각이 지나면 기본 키로 자동 복귀)
+  get apiKey2() { return localStorage.getItem('apiKey2') || ''; },
+  set apiKey2(v) { const x = v.replace(/[^\x21-\x7E]/g, ''); if (x) localStorage.setItem('apiKey2', x); else localStorage.removeItem('apiKey2'); },
+  get keyDownUntil() { return +localStorage.getItem('keyDownUntil') || 0; },
+  set keyDownUntil(v) { if (v) localStorage.setItem('keyDownUntil', String(v)); else localStorage.removeItem('keyDownUntil'); },
+  get onBackup() { return !!this.apiKey2 && Date.now() < this.keyDownUntil; },
+  get key() { return this.onBackup ? this.apiKey2 : this.apiKey; },                      // 실제 요청에 쓰는 키
   // 직접 입력한 모델이 있으면 우선, 없으면 속도 모드에 따라 선택
   get customModel() { return localStorage.getItem('modelCustom') || ''; },
   set customModel(v) { localStorage.setItem('modelCustom', v.trim()); },
@@ -101,6 +108,22 @@ window.addEventListener('unhandledrejection', e => { errLog.push(`${new Date().t
 function audioSession(type) { try { if (navigator.audioSession && navigator.audioSession.type !== type) navigator.audioSession.type = type; } catch {} }
 const SILENT_WAV = "data:audio/wav;base64,UklGRqQMAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YYAMAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
 
+// ---------- 예비 키: 기본 키의 하루 한도가 다 찼을 때만 자동 전환 ----------
+const HARD_QUOTA = /limit:\s*0\b|PerDay|free[_ ]?tier/i;                             // 기다려도 소용없는 한도(하루치 소진·무료 한도 0)
+function msToPacificMidnight() {                                                       // Google 사용량은 미국 서부 시간 자정에 다시 채워짐
+  const p = new Intl.DateTimeFormat('en-US', {timeZone: 'America/Los_Angeles', hour: 'numeric', minute: 'numeric', hour12: false}).formatToParts(new Date());
+  const h = (+p.find(x => x.type === 'hour').value) % 24, m = +p.find(x => x.type === 'minute').value;
+  return Math.max(60000, (24 * 60 - (h * 60 + m)) * 60000);
+}
+function switchToBackup() {
+  if (!S.apiKey2 || S.onBackup) return false;                                          // 예비 키가 없거나 이미 예비 키를 쓰는 중이면 전환하지 않음
+  S.keyDownUntil = Date.now() + +(window.__keyDownMs || msToPacificMidnight());
+  toast('기본 키의 사용 한도가 다 찼어요 → 예비 키로 바꿨어요', 'warn', 6000); updateKeyInfo(); return true;
+}
+function updateKeyInfo() {
+  const el = $('#keyInfo'); if (!el) return;
+  el.textContent = !S.apiKey2 ? '예비 키가 없어요' : S.onBackup ? `지금 예비 키를 쓰는 중 · 기본 키는 ${new Date(S.keyDownUntil).toLocaleString('ko-KR', {month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit'})} 이후 다시 사용` : '지금 기본 키를 쓰는 중 · 기본 키 한도가 다 차면 자동으로 예비 키로 바뀌어요';
+}
 // ---------- Gemini 음성 합성 (자연스러운 목소리) ----------
 const GVOICES = [['Charon', '남성 · 차분하고 설명하는 톤 (기본)'], ['Orus', '남성 · 단단하고 또렷함'], ['Alnilam', '남성 · 단단함'], ['Schedar', '남성 · 고르고 안정적'],
   ['Sadaltager', '남성 · 지적인 톤'], ['Kore', '여성 · 또렷함'], ['Sulafat', '여성 · 따뜻함'], ['Vindemiatrix', '여성 · 부드러움'], ['Achernar', '여성 · 부드럽고 낮음']];
@@ -114,11 +137,11 @@ async function geminiTTS(text, attempt = 0, notify = true) {
   let model = modelCache().tts || 'gemini-2.5-flash-preview-tts', lastErr = null;
   const prompt = `Read this aloud calmly, warmly and steadily, in a natural gentle tone at an even pace (never sad, tearful or whiny): ${text}`;
   for (let k = 0; k < 3; k++) {                            // 일시적인 오류는 최대 3번까지 시도
-    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), +(window.__ttsTimeout || 20000));
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), +(window.__ttsTimeout || 20000)), usedKey = S.key;
     let r, d;
     try {
       r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-        method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
+        method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.key},
         body: JSON.stringify({contents: [{parts: [{text: prompt}]}], generationConfig: {responseModalities: ['AUDIO'], speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: S.gvoice}}}}}),
       });
       d = await r.json().catch(() => ({}));
@@ -140,7 +163,7 @@ async function geminiTTS(text, attempt = 0, notify = true) {
       await discoverModels(true); if (modelCache().tts && modelCache().tts !== model) { model = modelCache().tts; continue; }
     }
     if (r.status === 429) {
-      if (/limit:\s*0\b|PerDay|free[_ ]?tier/i.test(JSON.stringify(d.error || {}))) { lastErr.hard = true; throw lastErr; }   // 이 키는 사용 한도가 없거나 하루치를 다 씀 → 기다려도 소용없음
+      if (HARD_QUOTA.test(JSON.stringify(d.error || {}))) { if (usedKey !== S.key || switchToBackup()) { k--; continue; } lastErr.hard = true; throw lastErr; }   // 하루치 소진: 예비 키가 있으면 같은 요청을 예비 키로 다시, 없으면(또는 둘 다 소진) 기다려도 소용없음
       const w = Math.min(retryAfter(d, msg) || 6, 25);
       if (k < 2) { if (notify) toast(`사용량 제한 — ${Math.ceil(w)}초 뒤 다시 시도해요`, 'warn', 0); await sleep(w * 1000); continue; }
       throw lastErr;
@@ -411,7 +434,7 @@ async function discoverModels(force) {
   let list = [], tok = '';
   try {
     for (let i = 0; i < 5; i++) {
-      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000' + (tok ? '&pageToken=' + encodeURIComponent(tok) : ''), {headers: {'x-goog-api-key': S.apiKey}});
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000' + (tok ? '&pageToken=' + encodeURIComponent(tok) : ''), {headers: {'x-goog-api-key': S.key}});
       if (!r.ok) return c;
       const d = await r.json(); list = list.concat(d.models || []); tok = d.nextPageToken; if (!tok) break;
     }
@@ -447,14 +470,14 @@ function altModel(model) {
 async function gemini(body, attempt = 0, alt = '') {
   if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
   const model = alt || forceModel || S.model; let r;
-  const ac = new AbortController(), gtimer = setTimeout(() => ac.abort(), +(window.__gemTimeout || 25000));   // 요청 하나가 멈춰도 뒤의 번역이 막히지 않게
+  const usedKey = S.key, ac = new AbortController(), gtimer = setTimeout(() => ac.abort(), +(window.__gemTimeout || 25000));   // 요청 하나가 멈춰도 뒤의 번역이 막히지 않게
   const rejected = k => localStorage.getItem(`reject:${k}:${model}`) === '1';          // 이 모델이 이미 거부한 옵션인지
   if (/flash/.test(model) && !body.__noThink && !rejected('think')) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
   if (rejected('schema') && body.generationConfig?.responseSchema) { body = {...body, generationConfig: {...body.generationConfig}}; delete body.generationConfig.responseSchema; }
   try {
     r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST', signal: ac.signal,
-      headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
+      headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.key},
       body: JSON.stringify({...body, __noThink: undefined}),
     });
   } catch (e) {
@@ -472,7 +495,7 @@ async function gemini(body, attempt = 0, alt = '') {
       await sleep(w); return gemini(body, attempt + 1, useAlt);
     }
     if (r.status === 429) {                                               // 사용량 제한: 잠깐 기다렸다 다시, 한도를 다 쓴 경우는 이유를 알림
-      if (/limit:\s*0\b|PerDay|free[_ ]?tier/i.test(JSON.stringify(data.error || {}))) throw new Error('Gemini 사용 한도를 모두 썼어요 (무료 한도는 하루치가 정해져 있어요). 내일 다시 쓰거나 Google AI Studio에서 결제를 설정하세요.');
+      if (HARD_QUOTA.test(JSON.stringify(data.error || {}))) { if (usedKey !== S.key || switchToBackup()) return gemini(body, attempt, alt); throw new Error('Gemini 사용 한도를 모두 썼어요 (무료 한도는 하루치가 정해져 있어요). 내일 다시 쓰거나 Google AI Studio에서 결제를 설정하세요.'); }
       if (attempt < 3) { const w = Math.min(retryAfter(data, msg) || 5, 20); toast(`사용량 제한 — ${Math.ceil(w)}초 뒤 다시 시도해요`, 'warn', w * 1000); await sleep(w * 1000); return gemini(body, attempt + 1, alt); }
     }
     if (attempt < 2 && !S.customModel && (r.status === 404 || /no longer available|not found|deprecated/i.test(msg))) {
@@ -618,7 +641,7 @@ class GeminiLive {
   }
   connect(langKey, mode) {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.apiKey));
+      const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.key));
       this.ws = ws; this.ready = false;
       const timer = setTimeout(() => { reject(new Error('연결 시간 초과 (10초)')); try { ws.close(); } catch {} }, 10000);
       ws.onopen = () => ws.send(JSON.stringify(this.setupMsg(langKey, mode)));
@@ -641,14 +664,14 @@ class GeminiLive {
   async reconnect(why, quiet) {
     if (this.reconnecting || this.closing) return;
     this.reconnecting = true;
-    if (/quota|exceeded|resource.?exhausted/i.test(why)) { this.reconnecting = false; return this.h.onClose('Gemini 사용 한도를 넘었어요 (' + why.slice(0, 80) + ')'); }
+    if (/quota|exceeded|resource.?exhausted/i.test(why) && !switchToBackup()) { this.reconnecting = false; return this.h.onClose('Gemini 사용 한도를 넘었어요 (' + why.slice(0, 80) + ')'); }   // 예비 키가 있으면 그 키로 계속
     const old = this.ws; this.ready = false;
     if (!quiet) this.h.onStatus?.('🔄 연결이 끊겨 다시 연결 중…');
     try {
       let ok = false;
       for (let i = 0; i < 4 && !this.closing; i++) {
         try { if (this.speaking) this.endActivity(); this.pre = []; this.cand = 0; this.endTurn(); await this.connect(this.langKey, this.mode); ok = true; break; }
-        catch (e) { if (/quota|exceeded/i.test(e.message)) { this.h.onClose('Gemini 사용 한도를 넘었어요 (' + e.message.slice(0, 80) + ')'); return; } await sleep(700 * (i + 1)); }
+        catch (e) { if (/quota|exceeded/i.test(e.message)) { if (switchToBackup()) continue; this.h.onClose('Gemini 사용 한도를 넘었어요 (' + e.message.slice(0, 80) + ')'); return; } await sleep(700 * (i + 1)); }
       }
       if (this.closing) return;
       if (!ok) { this.h.onClose(why + ' (재연결 실패)'); return; }
@@ -705,11 +728,12 @@ class GeminiLive {
     const tryModes = async () => {
       for (const mode of ['manual', 'auto', 'min']) {                        // 서버가 일부 옵션을 거부하면 더 단순한 설정으로 재시도
         try { this.mode = mode; await this.connect(langKey, mode); return null; }
-        catch (e) { lastErr = e; }
+        catch (e) { lastErr = e; if (/quota|exceeded/i.test(e.message)) break; }                  // 한도 오류는 다른 방식으로 해도 같음 → 바로 중단
       }
       return lastErr;
     };
-    if (await tryModes() && !localStorage.getItem('liveModel')) {            // 모든 설정이 실패 → 모델이 단종됐을 수 있으니 최신 Live 모델을 찾아 한 번 더
+    if (await tryModes() && /quota|exceeded/i.test(lastErr?.message || '') && switchToBackup()) { lastErr = null; await tryModes(); }   // 시작할 때 이미 한도 → 예비 키로
+    if (lastErr && !this.ready && !localStorage.getItem('liveModel')) {            // 모든 설정이 실패 → 모델이 단종됐을 수 있으니 최신 Live 모델을 찾아 한 번 더
       const before = S.liveModel; await discoverModels(true);
       if (S.liveModel !== before) { lastErr = null; await tryModes(); renderModelInfo(); }
     }
@@ -1365,15 +1389,15 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
   box.hidden = false; $('#copyDiag').hidden = false; log(null, `앱 버전 ${APP_VERSION} · ${(navigator.userAgent.match(/OS [\d_]+/) || [''])[0]}`);
   if (!S.apiKey) return log(false, 'API 키가 비어 있습니다');
   try { const ds = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); log(null, `마이크 ${ds.length}개: ${ds.map(d => d.label || '(이름 없음)').join(' / ')} · 선택: ${S.micId ? (ds.find(d => d.deviceId === S.micId)?.label || '저장된 장치') : '자동'}`); } catch {}
-  log(null, `API 키 ${S.apiKey.slice(0, 4)}… (${S.apiKey.length}자)`);
-  const base = 'https://generativelanguage.googleapis.com/v1beta/', hdr = {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey};
+  log(null, `API 키 ${S.apiKey.slice(0, 4)}… (${S.apiKey.length}자) · 예비 키: ${S.apiKey2 ? S.apiKey2.slice(0, 4) + '… 설정됨' : '없음'} · 지금 쓰는 키: ${S.onBackup ? '예비' : '기본'}`);
+  const base = 'https://generativelanguage.googleapis.com/v1beta/', hdr = {'Content-Type': 'application/json', 'x-goog-api-key': S.key};
   const call = async (url, init) => { try { const r = await fetch(url, init); const d = await r.json().catch(() => ({})); return {r, d}; } catch (e) { return {err: e.message}; } };
   const fmt = x => x.err ? `연결 실패: ${x.err}` : x.r.ok ? `정상 (${x.r.status})` : `${x.r.status} ${x.d.error?.message || ''}`.slice(0, 220);
   let x = await call(base + 'models?pageSize=1000', {headers: hdr});
@@ -1398,7 +1422,7 @@ async function runDiag() {
   log(null, `오디오 상태: ${GT.ctx ? GT.ctx.state : '아직 안 만듦'} · 재생 모드: ${navigator.audioSession ? navigator.audioSession.type : '미지원'} · 폰 옆면 무음 스위치가 켜져 있으면 소리가 안 날 수 있어요`);
   if (errLog.length) log(false, `최근 앱 오류 ${errLog.length}건: ${errLog.slice(-3).join(' | ').slice(0, 260)}`);
   const live = await new Promise(res => {
-    const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.apiKey));
+    const ws = new WebSocket('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=' + encodeURIComponent(S.key));
     const t = setTimeout(() => { try { ws.close(); } catch {} res('8초 안에 응답 없음'); }, 8000);
     ws.onopen = () => ws.send(JSON.stringify({setup: {model: 'models/' + S.liveModel.replace(/^models\//, ''), generationConfig: {responseModalities: ['AUDIO']}}}));
     ws.onmessage = async ev => { try { const m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text()); if (m.setupComplete) { clearTimeout(t); ws.close(); res(true); } } catch {} };
@@ -1413,6 +1437,16 @@ async function runDiag() {
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
 $('#voiceEngine').value = S.voiceEngine; $('#pitch').value = S.pitch; GVOICES.forEach(([v, d]) => $('#gvoice').add(new Option(`${v} — ${d}`, v))); $('#gvoice').value = S.gvoice;
 $('#liveModel').value = localStorage.getItem('liveModel') || ''; $('#liveModel').placeholder = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#echoMode').value = S.echoMode; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
+$('#apiKey2').value = S.apiKey2; updateKeyInfo();
+$('#apiKey2').onchange = e => { S.apiKey2 = e.target.value; if (!S.apiKey2) S.keyDownUntil = 0; updateKeyInfo(); };
+$('#testKey2').onclick = async () => {
+  const out = $('#keyResult2'); const k = $('#apiKey2').value.replace(/[^\x21-\x7E]/g, ''); S.apiKey2 = k; updateKeyInfo();
+  if (!k) { out.textContent = '예비 키를 먼저 입력해 주세요'; return; }
+  out.textContent = '확인 중…';
+  try { const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {headers: {'x-goog-api-key': k}}); const d = await r.json().catch(() => ({}));
+    out.textContent = r.ok ? '✅ 예비 키가 정상이에요' : `❌ ${r.status} ${(d.error?.message || '').slice(0, 120)}`; }
+  catch (e) { out.textContent = '❌ 연결 실패: ' + e.message; }
+};
 $('#apiKey').onchange = e => { S.apiKey = e.target.value; discoverModels(true).then(renderModelInfo); };
 $('#model').onchange = e => S.customModel = e.target.value;
 $('#voiceEngine').onchange = e => S.voiceEngine = e.target.value;

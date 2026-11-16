@@ -72,6 +72,11 @@
     <div class="group">
       <label class="field"><span class="lbl">Gemini API 키 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">키 받기 ↗</a></span>
         <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza..."></label>
+      <label class="field"><span class="lbl">예비 API 키 (선택) <span>결제를 연결한 내 키 권장</span></span>
+        <input id="apiKey2" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="기본 키 한도가 다 차면 자동으로 사용"></label>
+      <div id="keyInfo" class="small note"></div>
+      <button id="testKey2" class="btn wide" type="button">예비 키 확인</button>
+      <div id="keyResult2" class="small note"></div>
       <button id="testKey" class="btn wide">Gemini 연결 테스트 (최신 모델 자동 찾기)</button>
       <div id="keyResult" class="small note"></div>
       <div id="modelInfo" class="small note"></div>
