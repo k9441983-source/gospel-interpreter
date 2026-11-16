@@ -16,7 +16,7 @@ const S = {
   // 직접 입력한 모델이 있으면 우선, 없으면 속도 모드에 따라 선택
   get customModel() { return localStorage.getItem('modelCustom') || ''; },
   set customModel(v) { localStorage.setItem('modelCustom', v.trim()); },
-  get liveModel() { return localStorage.getItem('liveModel') || 'gemini-2.5-flash-native-audio-preview-12-2025'; },
+  get liveModel() { return localStorage.getItem('liveModel') || modelCache().live || 'gemini-2.5-flash-native-audio-preview-12-2025'; },
   set liveModel(v) { localStorage.setItem('liveModel', v.trim()); },
   get geminiVoice() { return localStorage.getItem('geminiVoice') !== '0'; },
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
@@ -25,7 +25,7 @@ const S = {
   get muteOnPlay() { return this.echoMode !== 'off'; },
   get speed() { return localStorage.getItem('speed') || 'live'; },
   set speed(v) { localStorage.setItem('speed', v); },
-  get model() { return this.customModel || (this.speed === 'accurate' ? 'gemini-2.5-flash' : 'gemini-2.5-flash-lite'); },
+  get model() { const c = modelCache(); return this.customModel || (this.speed === 'accurate' ? (c.accurate || 'gemini-flash-latest') : (c.fast || 'gemini-flash-lite-latest')); },
   get target() { return localStorage.getItem('target') || 'telugu'; },
   set target(v) { localStorage.setItem('target', v); },
   get autoSpeak() { return localStorage.getItem('autoSpeak') === '1'; },   // 기본: 글자로만 보기
@@ -140,21 +140,69 @@ function b64(bytes) {
 }
 
 // ---------- Gemini ----------
-async function gemini(body) {
-  if (/flash/.test(S.model)) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
-  if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
-  let r;
+
+// ---------- 사용 가능한 최신 모델 자동 탐색 (모델 이름은 자주 바뀌고 단종되므로 고정하지 않음) ----------
+function modelCache() { try { return JSON.parse(localStorage.getItem('modelsCache') || '{}'); } catch { return {}; } }
+async function discoverModels(force) {
+  const c = modelCache();
+  if (!S.apiKey) return c;
+  if (!force && c.t && Date.now() - c.t < 864e5) return c;               // 하루 한 번
+  let list = [], tok = '';
   try {
-    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.model)}:generateContent`, {
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000' + (tok ? '&pageToken=' + encodeURIComponent(tok) : ''), {headers: {'x-goog-api-key': S.apiKey}});
+      if (!r.ok) return c;
+      const d = await r.json(); list = list.concat(d.models || []); tok = d.nextPageToken; if (!tok) break;
+    }
+  } catch { return c; }
+  const name = m => m.name.replace(/^models\//, '');
+  const can = (m, k) => (m.supportedGenerationMethods || []).includes(k);
+  const ver = n => { const x = n.match(/gemini-(?:live-)?(\d+(?:\.\d+)?)/); return x ? parseFloat(x[1]) : 0; };
+  const date = n => { const x = n.match(/(\d{2})-(\d{4})$/); return x ? +x[2] * 100 + +x[1] : 0; };
+  const rank = n => [ver(n), /preview|exp/.test(n) ? 0 : 1, date(n)];       // 버전 → 정식판 우선 → 날짜
+  const best = arr => arr.map(name).sort((x, y) => { const a = rank(x), b = rank(y); for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return b[i] - a[i]; return 0; })[0];
+  const text = list.filter(m => can(m, 'generateContent') && !/image|tts|embedding|audio|live|robotics|computer|-exp|customtools|-latest$/.test(m.name));
+  const out = {
+    t: Date.now(),
+    fast: best(text.filter(m => /-flash-lite/.test(m.name))) || c.fast,
+    accurate: best(text.filter(m => /-flash(?!-lite)/.test(m.name))) || c.accurate,
+    live: best(list.filter(m => can(m, 'bidiGenerateContent'))) || c.live,
+  };
+  localStorage.setItem('modelsCache', JSON.stringify(out));
+  return out;
+}
+function renderModelInfo() {
+  const el = $('#modelInfo'); if (!el) return;
+  el.textContent = `사용 중인 모델 — 빠름: ${S.speed === 'accurate' && !S.customModel ? modelCache().fast || '자동' : S.model} · 정확: ${modelCache().accurate || '자동'} · Live: ${S.liveModel}`;
+}
+
+async function gemini(body, attempt = 0) {
+  if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
+  if (/flash/.test(S.model) && !body.__noThink) (body.generationConfig ||= {}).thinkingConfig = {thinkingBudget: 0}; // 추론 생략으로 응답 속도 향상
+  const model = S.model; let r;
+  try {
+    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
-      body: JSON.stringify(body),
+      body: JSON.stringify({...body, __noThink: undefined}),
     });
   } catch (e) {
     throw new Error(`[Gemini 서버 연결 실패] ${e.message} — 인터넷/VPN/콘텐츠 차단기를 확인하세요.`);
   }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`Gemini 오류 (${r.status}): ${data.error?.message || '알 수 없는 오류'}`);
+  if (!r.ok) {
+    const msg = data.error?.message || '알 수 없는 오류';
+    if (attempt < 2 && !S.customModel && (r.status === 404 || /no longer available|not found|deprecated/i.test(msg))) {
+      await discoverModels(true);                                            // 단종된 모델 → 내 키로 쓸 수 있는 최신 모델을 다시 찾음
+      if (S.model === model) {                                               // 못 찾았으면 오류가 권장한 모델을 사용
+        const rec = msg.match(/models\/([\w.\-]+)/g)?.map(x => x.slice(7)).find(x => x !== model);
+        if (rec) { const c = modelCache(); c[S.speed === 'accurate' ? 'accurate' : 'fast'] = rec; c.t = Date.now(); localStorage.setItem('modelsCache', JSON.stringify(c)); }
+      }
+      if (S.model !== model) { renderModelInfo(); return gemini(body, attempt + 1); }
+    }
+    if (attempt < 2 && r.status === 400 && /thinking/i.test(msg)) { body = {...body, __noThink: true}; if (body.generationConfig) { body.generationConfig = {...body.generationConfig}; delete body.generationConfig.thinkingConfig; } return gemini(body, attempt + 1); }
+    throw new Error(`Gemini 오류 (${r.status}): ${msg}`);
+  }
   const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).find(Boolean);
   if (!text) throw new Error('Gemini 응답을 해석하지 못했습니다.');
   return JSON.parse(text);
@@ -310,11 +358,18 @@ class GeminiLive {
     this.stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
     this.pre = []; this.speaking = false; this.noise = 0.008; this.silMs = 0; this.segMs = 0;
     let lastErr;
-    for (const mode of ['manual', 'auto', 'min']) {                          // 서버가 일부 옵션을 거부하면 더 단순한 설정으로 재시도
-      try { this.mode = mode; await this.connect(langKey, mode); lastErr = null; break; }
-      catch (e) { lastErr = e; }
+    const tryModes = async () => {
+      for (const mode of ['manual', 'auto', 'min']) {                        // 서버가 일부 옵션을 거부하면 더 단순한 설정으로 재시도
+        try { this.mode = mode; await this.connect(langKey, mode); return null; }
+        catch (e) { lastErr = e; }
+      }
+      return lastErr;
+    };
+    if (await tryModes() && !localStorage.getItem('liveModel')) {            // 모든 설정이 실패 → 모델이 단종됐을 수 있으니 최신 Live 모델을 찾아 한 번 더
+      const before = S.liveModel; await discoverModels(true);
+      if (S.liveModel !== before) { lastErr = null; await tryModes(); renderModelInfo(); }
     }
-    if (lastErr) { await this.stop(); throw new Error(`Live 연결 실패: ${lastErr.message} (모델: ${S.liveModel})`); }
+    if (lastErr && !this.ready) { await this.stop(); throw new Error(`Live 연결 실패: ${lastErr.message} (모델: ${S.liveModel})`); }
     this.src = this.ictx.createMediaStreamSource(this.stream);
     this.proc = this.ictx.createScriptProcessor(2048, 1, 1);   // 약 43ms 단위로 전송
     this.proc.onaudioprocess = e => this.frame(new Float32Array(e.inputBuffer.getChannelData(0)));
@@ -617,10 +672,10 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 // ---------- 설정 탭 ----------
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
-$('#liveModel').value = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#echoMode').value = S.echoMode; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
-$('#apiKey').onchange = e => S.apiKey = e.target.value;
+$('#liveModel').value = localStorage.getItem('liveModel') || ''; $('#liveModel').placeholder = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#echoMode').value = S.echoMode; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
+$('#apiKey').onchange = e => { S.apiKey = e.target.value; discoverModels(true).then(renderModelInfo); };
 $('#model').onchange = e => S.customModel = e.target.value;
-$('#liveModel').onchange = e => S.liveModel = e.target.value || 'gemini-2.5-flash-native-audio-preview-12-2025';
+$('#liveModel').onchange = e => { if (e.target.value.trim()) S.liveModel = e.target.value; else localStorage.removeItem('liveModel'); renderModelInfo(); };
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
 $('#echoMode').onchange = e => S.echoMode = e.target.value;
 $('#autoSpeak').onchange = e => setSpeak(e.target.checked);
@@ -630,14 +685,12 @@ $('#testKey').onclick = async () => {
   const out = $('#keyResult'); out.textContent = '확인 중…';
   S.apiKey = $('#apiKey').value; S.customModel = $('#model').value;
   try {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.model)}:generateContent`, {
-      method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
-      body: JSON.stringify({contents: [{parts: [{text: 'Say OK'}]}]}),
-    });
-    const d = await r.json().catch(() => ({}));
-    out.textContent = r.ok ? '✅ 연결 성공 (키·모델 정상)' : `❌ 오류 ${r.status}: ${d.error?.message || ''}`;
-  } catch (e) { out.textContent = '❌ Gemini 서버 연결 실패: ' + e.message; }
+    await discoverModels(true); renderModelInfo();
+    await gemini({contents: [{parts: [{text: 'Reply with JSON {"ok": true}'}]}], generationConfig: {responseMimeType: 'application/json'}});
+    out.textContent = `✅ 연결 성공 (모델: ${S.model})`;
+  } catch (e) { out.textContent = '❌ ' + e.message; }
 };
 $('#testVoice').onclick = () => { TTS.unlock(); TTS.speak('దేవుడు నిన్ను ప్రేమిస్తున్నాడు', 'telugu', $('#swarn')); };
 
+renderModelInfo(); if (S.apiKey) discoverModels(false).then(renderModelInfo);
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
