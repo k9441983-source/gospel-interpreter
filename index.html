@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="복음 통역">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#1f6feb">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="style.css">
+<title>복음 통역</title>
+</head>
+<body>
+<main>
+  <!-- 통역 -->
+  <section id="tab-translate" class="tab active">
+    <header><h1>복음 통역</h1>
+      <select id="target" aria-label="번역 언어"></select></header>
+    <div id="warn" class="warn" hidden></div>
+    <div id="err" class="err" hidden></div>
+    <div id="entries"><p class="hint" id="hint"></p></div>
+    <div class="bar">
+      <div class="meter" id="meter" hidden><i></i></div>
+      <button id="mic" aria-label="녹음"><span id="micIcon">🎤</span></button>
+      <div id="micLabel" class="small">눌러서 말하기</div>
+    </div>
+  </section>
+
+  <!-- 성경 -->
+  <section id="tab-bible" class="tab">
+    <header><h1>성경</h1><span id="pronSpin" class="small" hidden>발음 생성 중…</span></header>
+    <div class="seg" id="primarySeg"></div>
+    <div class="row">
+      <select id="book"></select>
+      <div class="stepper"><button id="chPrev">−</button><span id="chLabel">3장</span><button id="chNext">＋</button></div>
+    </div>
+    <div class="row">
+      <button id="playChapter" class="btn">▶ 장 전체 텔루구어로 듣기</button>
+      <button id="stopBtn" class="btn danger" hidden>■ 정지</button>
+    </div>
+    <div id="bwarn" class="warn" hidden></div>
+    <div id="berr" class="err" hidden></div>
+    <div id="verses"></div>
+  </section>
+
+  <!-- 설정 -->
+  <section id="tab-settings" class="tab">
+    <header><h1>설정</h1></header>
+    <label>Gemini API 키 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">받기</a>
+      <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza..."></label>
+    <label>모델 <input id="model" autocapitalize="off" spellcheck="false"></label>
+    <label class="check"><input type="checkbox" id="autoSpeak"> 번역 후 자동으로 읽어주기</label>
+    <label class="check"><input type="checkbox" id="showPron"> 한글 발음 표시</label>
+    <label>읽는 속도 <input type="range" id="rate" min="0.5" max="1.2" step="0.05"></label>
+    <button id="testVoice" class="btn">텔루구어 음성 테스트</button>
+    <div id="swarn" class="warn" hidden></div>
+    <p class="small">API 키는 이 기기의 브라우저에만 저장되며 Google Gemini로만 전송됩니다. 텔루구어 음성이 없으면 iPhone 설정 &gt; 손쉬운 사용 &gt; 말하기 콘텐츠 &gt; 음성 &gt; 텔루구어에서 내려받으세요.</p>
+    <p class="small">성경: NKJV(© Thomas Nelson), 개역한글(1961), Telugu BSI 1880. 번역·발음은 AI가 만들므로 오류가 있을 수 있습니다.</p>
+  </section>
+</main>
+<nav>
+  <button data-tab="translate" class="on">🎙<span>통역</span></button>
+  <button data-tab="bible">📖<span>성경</span></button>
+  <button data-tab="settings">⚙️<span>설정</span></button>
+</nav>
+<script src="app.js"></script>
+</body>
+</html>
