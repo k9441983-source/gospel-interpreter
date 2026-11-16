@@ -32,6 +32,12 @@ const S = {
   set autoSpeak(v) { localStorage.setItem('autoSpeak', v ? '1' : '0'); },
   get showPron() { return localStorage.getItem('showPron') !== '0'; },
   set showPron(v) { localStorage.setItem('showPron', v ? '1' : '0'); },
+  get voiceEngine() { return localStorage.getItem('voiceEngine') || 'gemini'; },
+  set voiceEngine(v) { localStorage.setItem('voiceEngine', v); },
+  get gvoice() { return localStorage.getItem('gvoice') || 'Charon'; },
+  set gvoice(v) { localStorage.setItem('gvoice', v); },
+  get pitch() { return parseFloat(localStorage.getItem('pitch') || '0.9'); },
+  set pitch(v) { localStorage.setItem('pitch', String(v)); },
   get rate() { return parseFloat(localStorage.getItem('rate') || '0.85'); },
   set rate(v) { localStorage.setItem('rate', String(v)); },
 };
@@ -62,12 +68,83 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
 });
 
 // ---------- 음성 합성 (TTS) ----------
+
+// ---------- Gemini 음성 합성 (자연스러운 목소리) ----------
+const GVOICES = [['Charon', '남성 · 차분하고 설명하는 톤 (기본)'], ['Orus', '남성 · 단단하고 또렷함'], ['Alnilam', '남성 · 단단함'], ['Schedar', '남성 · 고르고 안정적'],
+  ['Sadaltager', '남성 · 지적인 톤'], ['Kore', '여성 · 또렷함'], ['Sulafat', '여성 · 따뜻함'], ['Vindemiatrix', '여성 · 부드러움'], ['Achernar', '여성 · 부드럽고 낮음']];
+async function geminiTTS(text, attempt = 0) {
+  if (!S.apiKey) throw new Error('API 키가 없습니다');
+  const model = modelCache().tts || 'gemini-2.5-flash-preview-tts';
+  const prompt = `Read this aloud calmly, warmly and steadily, in a natural gentle tone at an even pace (never sad, tearful or whiny): ${text}`;
+  let r;
+  try {
+    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey},
+      body: JSON.stringify({contents: [{parts: [{text: prompt}]}], generationConfig: {responseModalities: ['AUDIO'], speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: S.gvoice}}}}}),
+    });
+  } catch (e) { throw new Error(`연결 실패: ${e.message}`); }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (attempt < 1 && (r.status === 404 || /no longer available|not found/i.test(d.error?.message || ''))) { await discoverModels(true); if (modelCache().tts && modelCache().tts !== model) return geminiTTS(text, attempt + 1); }
+    throw new Error(`${r.status} ${(d.error?.message || '').slice(0, 160)} [모델: ${model}]`);
+  }
+  const inl = d.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData;
+  if (!inl?.data) throw new Error('음성 데이터가 없습니다 [모델: ' + model + ']');
+  const rate = +((inl.mimeType || '').match(/rate=(\d+)/)?.[1] || 24000), bin = atob(inl.data), n = bin.length >> 1, f = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); f[i] = (v >= 0x8000 ? v - 0x10000 : v) / 32768; }
+  return {samples: f, rate};
+}
+const GT = {
+  ctx: null, gen: 0, next: 0, srcs: [], cache: new Map(),
+  ensure() { if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); } if (this.ctx.state === 'suspended') this.ctx.resume(); return this.ctx; },
+  active() { return !!this.ctx && this.ctx.currentTime < this.next; },
+  flush() { this.gen++; this.srcs.forEach(s => { try { s.stop(); } catch {} }); this.srcs = []; this.next = 0; },
+  schedule(pcm) {
+    const ctx = this.ensure(), buf = ctx.createBuffer(1, pcm.samples.length, pcm.rate); buf.getChannelData(0).set(pcm.samples);
+    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
+    const t = Math.max(ctx.currentTime + 0.05, this.next); src.start(t); this.next = t + buf.duration; this.srcs.push(src);
+    src.onended = () => { this.srcs = this.srcs.filter(x => x !== src); if (!this.active() && !speechSynthesis.speaking) $('#stopBtn').hidden = true; };
+  },
+  fetch(text) {                                           // 같은 문장은 다시 요청하지 않음
+    const k = S.gvoice + '|' + text;
+    if (!this.cache.has(k)) { this.cache.set(k, geminiTTS(text).catch(e => { this.cache.delete(k); throw e; })); if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value); }
+    return this.cache.get(k);
+  },
+  async enqueue(texts, langKey, warnEl) {
+    const gen = this.gen, items = [].concat(texts).filter(t => t && t.trim());
+    if (!items.length) return;
+    // 첫 문장은 단독으로(빨리 시작), 이후 4문장(약 600자)씩 묶어 요청 수를 줄임 (음성 합성은 분당 요청 제한이 낮음)
+    const groups = [[items[0]]]; let cur = [], len = 0;
+    for (const t of items.slice(1)) { if (cur.length && (cur.length >= 4 || len + t.length > 600)) { groups.push(cur); cur = []; len = 0; } cur.push(t); len += t.length; }
+    if (cur.length) groups.push(cur);
+    $('#stopBtn').hidden = false; show(warnEl, '');
+    let next = this.fetch(groups[0].join('\n\n')); next.catch(() => {});
+    for (let i = 0; i < groups.length; i++) {
+      if (gen !== this.gen) return;
+      const cur = next;
+      if (i + 1 < groups.length) { next = this.fetch(groups[i + 1].join('\n\n')); next.catch(() => {}); }   // 지금 구간이 재생되는 동안 다음 구간을 미리 받음
+      let pcm;
+      try { pcm = await cur; }
+      catch (e) {                                          // 실패하면 이 구간만 기기 음성으로 대체
+        if (gen !== this.gen) return;
+        show(warnEl, `Gemini 음성을 만들지 못해 기기 음성으로 읽습니다 (${e.message.slice(0, 140)})`);
+        if (this.ctx) await new Promise(r => setTimeout(r, Math.max(0, (this.next - this.ctx.currentTime) * 1000) + 50));
+        if (gen === this.gen) TTS.deviceEnqueue(groups[i], langKey, null);
+        continue;
+      }
+      if (gen !== this.gen) return;
+      this.schedule(pcm);
+    }
+  },
+};
+
 const TTS = {
   voices: [],
   load() { this.voices = speechSynthesis.getVoices(); },
   // iOS Safari는 사용자 탭 안에서 한 번 speak 해야 이후(비동기) 낭독이 허용됨
   unlock() {
     const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u);
+    GT.ensure();                                           // Gemini 음성 재생용 오디오도 사용자 탭 안에서 미리 활성화
   },
   voiceFor(locale) {
     const lang = locale.toLowerCase().replace('_', '-');
@@ -75,9 +152,13 @@ const TTS = {
     if (m.length) return m.find(v => /enhanced|premium/i.test(v.name)) || m[0];
     return this.voices.find(v => v.lang.toLowerCase().startsWith(lang.slice(0, 2))) || null;
   },
-  speak(texts, langKey, warnEl) { speechSynthesis.cancel(); this.enqueue(texts, langKey, warnEl); },
+  speak(texts, langKey, warnEl) { speechSynthesis.cancel(); GT.flush(); this.enqueue(texts, langKey, warnEl); },
   // 진행 중인 낭독을 끊지 않고 뒤에 이어 붙임 (실시간 통역용)
   enqueue(texts, langKey, warnEl) {
+    if (S.voiceEngine === 'gemini' && S.apiKey) return GT.enqueue(texts, langKey, warnEl);   // 기본: Gemini 음성
+    return this.deviceEnqueue(texts, langKey, warnEl);
+  },
+  deviceEnqueue(texts, langKey, warnEl) {
     this.load();
     let missing = null;
     for (const t of [].concat(texts)) {
@@ -87,14 +168,14 @@ const TTS = {
       if (!v && !missing) missing = Lk;
       const u = new SpeechSynthesisUtterance(t);
       u.lang = Lk.locale; if (v) u.voice = v;
-      u.rate = S.rate;
+      u.rate = S.rate; u.pitch = S.pitch;
       u.onend = u.onerror = () => { if (!speechSynthesis.speaking) $('#stopBtn').hidden = true; };
       speechSynthesis.speak(u);
     }
-    show(warnEl, missing ? `${missing.name} 음성이 설치되어 있지 않을 수 있습니다. iPhone 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성에서 내려받아 주세요.` : '');
+    if (warnEl) show(warnEl, missing ? `${missing.name} 음성이 설치되어 있지 않을 수 있습니다. iPhone 설정 > 손쉬운 사용 > 말하기 콘텐츠 > 음성에서 내려받아 주세요.` : '');
     $('#stopBtn').hidden = false;
   },
-  stop() { speechSynthesis.cancel(); $('#stopBtn').hidden = true; },
+  stop() { speechSynthesis.cancel(); GT.flush(); $('#stopBtn').hidden = true; },
 };
 if ('speechSynthesis' in window) { TTS.load(); speechSynthesis.onvoiceschanged = () => TTS.load(); }
 $('#stopBtn').onclick = () => TTS.stop();
@@ -104,7 +185,7 @@ let lastEcho = -1e9;
 // 'playing' = 번역 소리가 나는 중, 'tail' = 끝난 직후 0.25초(잔향), 'none' = 소리 없음
 function echoState(geminiPlaying) {
   const now = performance.now();
-  if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending) { lastEcho = now; return 'playing'; }
+  if (geminiPlaying || speechSynthesis.speaking || speechSynthesis.pending || GT.active()) { lastEcho = now; return 'playing'; }
   return now - lastEcho < 250 ? 'tail' : 'none';
 }
 // 문장 단위 모드용: 설정이 꺼져 있지 않으면 번역 소리가 나는 동안 입력을 완전히 무시
@@ -167,13 +248,14 @@ async function discoverModels(force) {
     fast: best(text.filter(m => /-flash-lite/.test(m.name))) || c.fast,
     accurate: best(text.filter(m => /-flash(?!-lite)/.test(m.name))) || c.accurate,
     live: best(list.filter(m => can(m, 'bidiGenerateContent'))) || c.live,
+    tts: best(list.filter(m => can(m, 'generateContent') && /tts/.test(m.name) && /flash/.test(m.name))) || best(list.filter(m => can(m, 'generateContent') && /tts/.test(m.name))) || c.tts,
   };
   localStorage.setItem('modelsCache', JSON.stringify(out));
   return out;
 }
 function renderModelInfo() {
   const el = $('#modelInfo'); if (!el) return;
-  el.textContent = `사용 중인 모델 — 빠름: ${S.speed === 'accurate' && !S.customModel ? modelCache().fast || '자동' : S.model} · 정확: ${modelCache().accurate || '자동'} · Live: ${S.liveModel}`;
+  el.textContent = `사용 중인 모델 — 빠름: ${S.speed === 'accurate' && !S.customModel ? modelCache().fast || '자동' : S.model} · 정확: ${modelCache().accurate || '자동'} · Live: ${S.liveModel} · 음성합성: ${modelCache().tts || '자동'}`;
 }
 
 async function gemini(body, attempt = 0) {
@@ -325,7 +407,7 @@ class GeminiLive {
   setupMsg(langKey, mode) {
     const setup = {
       model: 'models/' + S.liveModel.replace(/^models\//, ''),
-      generationConfig: {responseModalities: ['AUDIO']},
+      generationConfig: {responseModalities: ['AUDIO'], ...(mode === 'min' ? {} : {speechConfig: {voiceConfig: {prebuiltVoiceConfig: {voiceName: S.gvoice}}}})},
       systemInstruction: {parts: [{text: `You are a live simultaneous interpreter for a Christian gospel message. ${directionPrompt(langKey)} You receive the talk in short fragments, each one possibly an incomplete sentence: translate each fragment immediately, like a simultaneous interpreter, keeping wording consistent with what you already said. Speak ONLY the translation: no commentary, no greetings, never answer questions, never add anything. Use the standard Bible wording of that language when a verse is quoted. If there is only silence or noise, say nothing.`}]},
       inputAudioTranscription: {},
       outputAudioTranscription: {},
@@ -700,7 +782,7 @@ $('#playChapter').onclick = () => { TTS.unlock(); TTS.speak(curTe, 'telugu', $('
 
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -738,9 +820,13 @@ async function runDiag() {
 
 // ---------- 설정 탭 ----------
 $('#apiKey').value = S.apiKey; $('#model').value = S.customModel;
+$('#voiceEngine').value = S.voiceEngine; $('#pitch').value = S.pitch; GVOICES.forEach(([v, d]) => $('#gvoice').add(new Option(`${v} — ${d}`, v))); $('#gvoice').value = S.gvoice;
 $('#liveModel').value = localStorage.getItem('liveModel') || ''; $('#liveModel').placeholder = S.liveModel; $('#geminiVoice').checked = S.geminiVoice; $('#echoMode').value = S.echoMode; $('#autoSpeak').checked = S.autoSpeak; $('#showPron').checked = S.showPron; $('#rate').value = S.rate;
 $('#apiKey').onchange = e => { S.apiKey = e.target.value; discoverModels(true).then(renderModelInfo); };
 $('#model').onchange = e => S.customModel = e.target.value;
+$('#voiceEngine').onchange = e => S.voiceEngine = e.target.value;
+$('#gvoice').onchange = e => S.gvoice = e.target.value;
+$('#pitch').oninput = e => S.pitch = parseFloat(e.target.value);
 $('#liveModel').onchange = e => { if (e.target.value.trim()) S.liveModel = e.target.value; else localStorage.removeItem('liveModel'); renderModelInfo(); };
 $('#geminiVoice').onchange = e => S.geminiVoice = e.target.checked;
 $('#echoMode').onchange = e => S.echoMode = e.target.value;
