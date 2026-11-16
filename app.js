@@ -120,22 +120,16 @@ async function gemini(body) {
 }
 
 function interpret(wav, langKey) {
-  const prompt = `You are an interpreter for a Christian gospel message.
-The attached audio is spoken in Korean or English (possibly mixed, with an accent or unclear pronunciation).
-1. Transcribe exactly what was said, in its original language and script. Use context (Bible / gospel vocabulary) to resolve unclear pronunciation.
-2. Translate it into natural, clear ${LANGS[langKey].prompt} suitable for being read aloud.
-   If a Bible verse is quoted, use the wording familiar from that language's standard Bible translation.
-3. Write "pronunciation_ko": how the translation sounds, spelled in Hangul (한글) so a Korean reader can read it aloud phonetically, syllable by syllable, separating words with spaces and keeping the same sentence breaks. If the target language is Korean, return an empty string.
-4. If the audio has no intelligible speech, or it is only background noise, or it is already spoken in the target language (for example an echo of the interpreter's own voice), return empty strings.
-Respond only with JSON.`;
+  // 출력 토큰(특히 텔루구어·한글 발음)이 응답 시간을 좌우하므로 최소한만 요청한다. 발음은 별도 요청.
+  const prompt = `Interpreter for a Christian gospel message. The audio is Korean or English (maybe accented).
+Return JSON: "transcript" = exact words spoken (original language); "translation" = natural ${LANGS[langKey].prompt} for reading aloud (use the standard Bible wording if a verse is quoted).
+If there is no intelligible speech, only noise, or it is already in the target language (e.g. an echo), return empty strings.`;
   return gemini({
     contents: [{parts: [{text: prompt}, {inline_data: {mime_type: 'audio/wav', data: b64(wav)}}]}],
     generationConfig: {
       temperature: 0.2, responseMimeType: 'application/json',
-      responseSchema: {type: 'OBJECT', properties: {
-        detected_language: {type: 'STRING'}, transcript: {type: 'STRING'},
-        translation: {type: 'STRING'}, pronunciation_ko: {type: 'STRING'}},
-        required: ['detected_language', 'transcript', 'translation', 'pronunciation_ko']},
+      responseSchema: {type: 'OBJECT', properties: {transcript: {type: 'STRING'}, translation: {type: 'STRING'}},
+        required: ['transcript', 'translation'], propertyOrdering: ['translation', 'transcript']},
     },
   });
 }
@@ -188,7 +182,7 @@ class Live {
     if (this.cur) {
       this.cur.push(d); this.curMs += ms;
       if (speech) { this.silenceMs = 0; this.speechMs += ms; } else this.silenceMs += ms;
-      if ((this.silenceMs >= 700 && this.speechMs >= 400) || this.curMs >= 15000) this.cut();   // 문장 끝 / 최대 15초
+      if ((this.silenceMs >= 500 && this.speechMs >= 400) || this.curMs >= 15000) this.cut();   // 문장 끝 / 최대 15초
       else if (this.silenceMs >= 1500 && this.speechMs < 400) this.cur = null;                   // 소음만 있었음
     } else {
       this.pre.push(d); if (this.pre.length > 4) this.pre.shift();                              // 말 시작 직전 약 0.3초 보존
@@ -217,17 +211,18 @@ function renderHint() {
   $('#hint').textContent = entries.length ? '' :
     `아래 버튼을 누르고 한국어/영어로 말씀하세요.\n문장이 끝날 때마다 바로 ${LANGS[S.target].name}로 번역해 읽어 줍니다.\n(스피커 소리가 다시 입력되지 않도록 이어폰 사용을 권장합니다)`;
 }
-function addEntry(r, langKey) {
+function addEntry(r, langKey, secs) {
   entries.unshift({r, langKey});
   const el = document.createElement('div'); el.className = 'card';
   const mk = (cls, txt) => { const d = document.createElement('div'); d.className = cls; d.textContent = txt; return d; };
-  el.append(mk('small', `${r.detected_language} · 인식된 말씀`), mk('', r.transcript), document.createElement('hr'),
-    mk('tr', r.translation));
-  if (S.showPron && r.pronunciation_ko) el.append(mk('pron', r.pronunciation_ko));
+  const pron = mk('pron', '');
+  el.append(mk('small', `인식된 말씀 · ⏱ ${secs.toFixed(1)}초`), mk('', r.transcript), document.createElement('hr'),
+    mk('tr', r.translation), pron);
   const b = document.createElement('button'); b.className = 'btn'; b.textContent = '🔊 다시 듣기';
   b.onclick = () => { TTS.unlock(); TTS.speak(r.translation, langKey, $('#warn')); };
   el.append(b);
   $('#entries').prepend(el); renderHint();
+  return pron;
 }
 function setPhase(p) {
   $('#mic').classList.toggle('rec', p === 'live');
@@ -240,7 +235,7 @@ function status() {
   if ($('#mic').dataset.phase === 'live') $('#micLabel').textContent = '🔴 실시간 통역 중' + (pending ? ` · 번역 중 ${pending}` : '') + ' — 멈추려면 누르세요';
 }
 function onSegment(wav) {
-  const langKey = S.target;
+  const langKey = S.target, t0 = performance.now();
   const p = interpret(wav, langKey).catch(e => ({error: e}));   // 바로 요청 시작 (여러 문장 동시 처리)
   pending++; status();
   chain = chain.then(async () => {                              // 표시·낭독은 말한 순서대로
@@ -248,8 +243,10 @@ function onSegment(wav) {
     if (r.error) return show($('#err'), r.error.message);
     if (!r.translation || !r.translation.trim()) return;
     show($('#err'), '');
-    addEntry(r, langKey);
-    if (S.autoSpeak) TTS.enqueue(r.translation, langKey, $('#warn'));
+    const pron = addEntry(r, langKey, (performance.now() - t0) / 1000);
+    if (S.autoSpeak) TTS.enqueue(r.translation, langKey, $('#warn'));   // 낭독을 먼저 시작
+    if (S.showPron && langKey !== 'korean')                              // 한글 발음은 뒤따라 채움
+      koreanPronunciation([r.translation], langKey).then(o => pron.textContent = o[0]).catch(() => {});
   });
 }
 $('#mic').onclick = async () => {
