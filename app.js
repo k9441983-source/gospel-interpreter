@@ -29,6 +29,10 @@ const S = {
   set geminiVoice(v) { localStorage.setItem('geminiVoice', v ? '1' : '0'); },
   get micProc() { return localStorage.getItem('micProc') || 'all'; },
   set micProc(v) { localStorage.setItem('micProc', v); },
+  get outId() { return localStorage.getItem('outId') || ''; },
+  set outId(v) { if (v) localStorage.setItem('outId', v); else localStorage.removeItem('outId'); },
+  get outLabel() { return localStorage.getItem('outLabel') || ''; },
+  set outLabel(v) { if (v) localStorage.setItem('outLabel', v); else localStorage.removeItem('outLabel'); },
   get micId() { return localStorage.getItem('micId') || ''; },
   set micId(v) { if (v) localStorage.setItem('micId', v); else localStorage.removeItem('micId'); },
   get micLabel() { return localStorage.getItem('micLabel') || ''; },
@@ -91,7 +95,7 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
   if (b.dataset.tab === 'bible') renderBible();
-  if (b.dataset.tab === 'settings') { refreshMics(false); updateStoreInfo(); }
+  if (b.dataset.tab === 'settings') { refreshMics(false); refreshOuts(false); updateStoreInfo(); }
 });
 
 // ---------- 음성 합성 (TTS) ----------
@@ -233,10 +237,29 @@ function ttsGroups(items) {
 }
 const groupKey = g => S.gvoice + '|' + g.join('\n\n');
 
+// 번역 소리가 나갈 곳(스피커·가상 오디오 케이블 등)을 고름 — 줌 마이크로 보내려면 가상 케이블을 여기서 선택 (데스크톱 크롬·엣지)
+const canSink = () => typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
+async function applySink(ctx) {
+  if (!S.outId || !ctx || !canSink()) return;
+  try { await ctx.setSinkId(S.outId); }
+  catch (e) { toast('선택한 출력 장치로 보내지 못했어요 (' + (e.message || e.name).slice(0, 60) + ') — 기본 출력으로 재생해요', 'warn', 5000); S.outId = ''; S.outLabel = ''; refreshOuts(false); }
+}
+async function refreshOuts(ask) {
+  const sel = $('#outSel'); if (!sel) return;
+  if (!canSink()) { sel.innerHTML = '<option value="">이 브라우저는 선택 불가 (데스크톱 크롬·엣지에서 가능)</option>'; sel.disabled = true; return; }
+  try {
+    if (ask) { const s = await navigator.mediaDevices.getUserMedia({audio: true}); s.getTracks().forEach(t => t.stop()); }
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    sel.innerHTML = ''; sel.add(new Option('자동 (기기 기본 출력)', ''));
+    devs.forEach(d => sel.add(new Option(d.label || '출력 장치', d.deviceId)));
+    if (S.outId && ![...sel.options].some(o => o.value === S.outId)) sel.add(new Option((S.outLabel || '저장된 장치') + ' (연결 확인 전)', S.outId));
+    sel.value = S.outId || '';
+  } catch (e) { show($('#swarn'), '출력 장치 목록을 가져오지 못했습니다: ' + e.message); }
+}
 const GT = {
   ctx: null, gen: 0, next: 0, srcs: [], cache: new Map(), loops: 0, silent: null, down: 0,
   ensure() {
-    if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); }
+    if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; this.ctx = new AC(); applySink(this.ctx); }
     if (!live) {                                                   // 통역(마이크) 중에는 건드리지 않음
       audioSession('playback');                                    // iOS: 무음 스위치와 상관없이 재생
       try { this.silent ||= Object.assign(new Audio(SILENT_WAV), {loop: true, volume: 0.02}); this.silent.play().catch(() => {}); } catch {}   // 구형 iOS용: 무음 오디오로 재생 모드 유지
@@ -722,7 +745,7 @@ class GeminiLive {
     if (!S.apiKey) throw new Error('설정 탭에서 Gemini API 키를 입력해 주세요.');
     try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}   // iOS: 무음 스위치·블루투스 출력에서도 녹음과 재생을 함께 허용
     const AC = window.AudioContext || window.webkitAudioContext;
-    this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000});         // 입력(마이크)·출력(Gemini 음성) 분리
+    this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000}); applySink(this.pctx);         // 입력(마이크)·출력(Gemini 음성) 분리
     await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
     this.stream = await getMic();
     this.pre = []; this.speaking = false; this.noise = 0.008; this.silMs = 0; this.segMs = 0;
@@ -1425,7 +1448,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v35';
+const APP_VERSION = 'v36';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
@@ -1498,7 +1521,14 @@ $('#micProc').value = S.micProc; $('#micProc').onchange = e => S.micProc = e.tar
 $('#micTestBtn').onclick = () => micTest();
 $('#micSel').onchange = e => { S.micId = e.target.value; S.micLabel = e.target.value ? e.target.selectedOptions[0].textContent.replace(/ \(연결 확인 전\)$/, '') : ''; };
 $('#refreshMic').onclick = () => refreshMics(true);
-if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => refreshMics(false));
+$('#outSel').onchange = async e => {
+  S.outId = e.target.value; S.outLabel = e.target.value ? e.target.selectedOptions[0].textContent.replace(/ \(연결 확인 전\)$/, '') : '';
+  for (const c of [GT.ctx, live?.pctx]) { if (!c || !canSink()) continue; try { await c.setSinkId(S.outId || ''); } catch {} }
+  toast(S.outId ? '번역 소리를 "' + S.outLabel + '"(으)로 보내요' : '번역 소리를 기본 출력으로 보내요', 'ok', 3000);
+};
+$('#refreshOut').onclick = () => refreshOuts(true);
+refreshOuts(false);
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => { refreshMics(false); refreshOuts(false); });
 $('#lite').onchange = e => { S.lite = e.target.checked; S.liteAuto = false; applyLite(); };
 $('#showPron').onchange = e => S.showPron = e.target.checked;
 $('#readSrc').onchange = e => { S.readSrc = e.target.value; applyReadSrc(); renderBible(); };
