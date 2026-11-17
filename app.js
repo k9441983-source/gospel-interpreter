@@ -701,7 +701,7 @@ class GeminiLive {
       if (this.closing) return;
       if (!ok) { this.h.onClose(why + ' (재연결 실패)'); return; }
       this.awaitSince = 0; try { if (old && old !== this.ws) old.close(); } catch {}
-      this.h.onStatus?.(null);
+      this.h.onStatus?.(null); this.reconnecting = false; this.flushEarly();
     } finally { this.reconnecting = false; }
   }
   // ── 건강 점검: 연결·마이크가 조용히 죽는 것을 감지해서 스스로 복구 ──
@@ -747,8 +747,7 @@ class GeminiLive {
     const AC = window.AudioContext || window.webkitAudioContext;
     this.ictx = new AC(); this.pctx = new AC({sampleRate: 24000}); applySink(this.pctx);         // 입력(마이크)·출력(Gemini 음성) 분리
     await this.ictx.resume(); await this.pctx.resume();                      // 사용자 탭 안에서 오디오 활성화
-    this.stream = await getMic();
-    this.pre = []; this.speaking = false; this.noise = 0.008; this.silMs = 0; this.segMs = 0;
+    this.pre = []; this.speaking = false; this.noise = 0.008; this.silMs = 0; this.segMs = 0; this.early = []; this.starting = true;
     let lastErr;
     const tryModes = async () => {
       for (const mode of ['manual', 'auto', 'min']) {                        // 서버가 일부 옵션을 거부하면 더 단순한 설정으로 재시도
@@ -757,18 +756,23 @@ class GeminiLive {
       }
       return lastErr;
     };
-    if (await tryModes() && /quota|exceeded/i.test(lastErr?.message || '') && switchToBackup()) { lastErr = null; await tryModes(); }   // 시작할 때 이미 한도 → 예비 키로
+    const first = tryModes();                                              // 서버 연결과 마이크 켜기를 동시에 (예전엔 차례로 해서 시작이 느렸음)
+    try { this.stream = await getMic(); }
+    catch (e) { this.closing = true; try { this.ws?.close(); } catch {} await first.catch(() => {}); this.starting = false; throw e; }
+    this.attachMic();                                                      // 연결이 끝나기 전에도 소리를 받아 둠 → 연결되면 곧바로 이어서 처리 (첫 말씀이 잘리지 않음)
+    if (await first && /quota|exceeded/i.test(lastErr?.message || '') && switchToBackup()) { lastErr = null; await tryModes(); }   // 시작할 때 이미 한도 → 예비 키로
     if (lastErr && !this.ready && !localStorage.getItem('liveModel')) {            // 모든 설정이 실패 → 모델이 단종됐을 수 있으니 최신 Live 모델을 찾아 한 번 더
       const before = S.liveModel; await discoverModels(true);
       if (S.liveModel !== before) { lastErr = null; await tryModes(); renderModelInfo(); }
     }
     if (lastErr && !this.ready) { await this.stop(); throw new Error(`Live 연결 실패: ${lastErr.message} (모델: ${S.liveModel})`); }
-    this.attachMic();
+    this.starting = false; this.flushEarly();
     this.watch = setInterval(() => this.health(), +(window.__watchMs || 2000));
     this.onVis = () => { if (!document.hidden) { this.ictx?.resume().catch(() => {}); this.pctx?.resume().catch(() => {}); this.health(); } };   // 앱으로 돌아오면 바로 점검
     document.addEventListener('visibilitychange', this.onVis);
-    try { this.wake = await navigator.wakeLock?.request('screen'); } catch {}
+    navigator.wakeLock?.request('screen').then(w => { this.wake = w; }).catch(() => {});      // 기다리지 않고 바로 시작
   }
+  flushEarly() { const e = this.early || []; this.early = []; e.forEach(x => this.frame(x)); }
   send(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); }
   sendAudio(d) {
     const f = downsample(d, this.ictx.sampleRate, 16000), pcm = new Int16Array(f.length);
@@ -797,14 +801,17 @@ class GeminiLive {
     if (active !== this.muted) { this.muted = active; this.h.onMute?.(active, em); }
     if (gate) { d = new Float32Array(d.length); rms = 0; }
     this.h.onLevel(Math.min(1, rms * 6));
-    if (!this.ws || this.ws.readyState !== 1 || !this.ready) return;
+    if (!this.ws || this.ws.readyState !== 1 || !this.ready) {                  // 연결 중에 들어온 소리는 버리지 않고 잠시 모아 둠 (최대 약 8초)
+      if (this.starting || this.reconnecting) { (this.early ||= []).push(d); if (this.early.length > 190) this.early.shift(); }
+      return;
+    }
     if (this.mode !== 'manual') return this.sendAudio(d);                    // 서버가 말 끝을 판단하는 모드
     const speech = rms > Math.max(0.02, this.noise * 3.5);
     if (!speech) this.noise = this.noise * 0.95 + rms * 0.05;                // 주변 소음에 적응
     if (!this.speaking) {
       this.pre.push(d); if (this.pre.length > 9) this.pre.shift();            // 말 시작 직전 약 0.4초 보존
       this.cand = speech ? (this.cand || 0) + 1 : Math.max(0, (this.cand || 0) - 1);   // 큰 소리가 약 0.2초 이상 이어질 때만 말로 인정
-      if (this.cand >= 5) { this.cand = 0; this.send({realtimeInput: {activityStart: {}}}); this.pre.forEach(x => this.sendAudio(x)); this.pre = []; this.speaking = true; this.segMs = 0; this.silMs = 0; }
+      if (this.cand >= 5) { this.cand = 0; this.send({realtimeInput: {activityStart: {}}}); this.h.onActivityStart?.(); this.pre.forEach(x => this.sendAudio(x)); this.pre = []; this.speaking = true; this.segMs = 0; this.silMs = 0; }
       return;
     }
     this.sendAudio(d); this.segMs += ms; this.silMs = speech ? 0 : this.silMs + ms; if (speech) this.lastSpeech = performance.now();
@@ -955,21 +962,24 @@ function makeLiveHandlers(langKey) {
     el.append(b); $('#entries').prepend(el); pruneCards(); renderHint();
     return card = {el, inp, tr, pron, en, head, raw: '', text: ''};
   };
+  const idleLabel = () => { if (live && /^(⏳ 번역하는|🎙 듣는)/.test($('#micLabel').textContent)) $('#micLabel').textContent = 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; };
   return {
     onLevel: setLevel,
     onStatus: s => { if (live) $('#micLabel').textContent = s || 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
     onMute: (m, mode) => { if (live) $('#micLabel').textContent = m ? (mode === 'smart' ? '🔊 번역 재생 중 — 큰 목소리만 인식' : '🔇 번역 재생 중 — 마이크 잠시 멈춤') : 'Live 통역 중… 말씀하세요 (멈추려면 누르세요)'; },
-    onActivityEnd: () => { lastEnd = performance.now(); },
+    onActivityStart: () => { if (live && !/^(🔊|🔇|🔄)/.test($('#micLabel').textContent)) $('#micLabel').textContent = '🎙 듣는 중…'; },                   // 서버 응답을 기다리지 않고 바로 반응
+    onActivityEnd: () => { lastEnd = performance.now(); if (live && !/^(🔊|🔇|🔄)/.test($('#micLabel').textContent)) $('#micLabel').textContent = '⏳ 번역하는 중…'; },
     onInput: t => { const c = open(); c.t0 ||= performance.now(); c.inp.textContent += t; },
     onOutput: t => {
       const c = open(); c.raw += t; c.text = cleanOut(c.raw);
       if (!c.text) return;                                      // 제어 문구뿐이면 무시
+      idleLabel();
       c.tr.textContent = c.text; c.el.hidden = false;
       if (S.callMode && !c.dir) { c.dir = dirLabel(c.text); if (c.dir) c.el.dataset.dir = c.dir; }
       if (!c.shown && (lastEnd || c.t0)) { c.shown = true; c.head.textContent = `${S.callMode && c.dir ? (c.dir === 'in' ? '📞 상대방 말씀 → 한국어' : '📞 내 말씀 → 상대에게') : '인식된 말씀 (실시간)'} · ⏱ 말 끝→번역 ${((performance.now() - (lastEnd || c.t0)) / 1000).toFixed(1)}초`; }
     },
     onTurnEnd: () => {
-      const c = card; card = null; if (!c) return;
+      idleLabel(); const c = card; card = null; if (!c) return;
       if (!c.text.trim()) { c.el.remove(); renderHint(); return; }
       if (!S.geminiVoice && S.autoSpeak && callSpeakOK(c.text)) TTS.enqueue(c.text, langKey, $('#warn'));
       if (langKey === 'both' && isTelugu(c.inp.textContent))               // 텔루구어로 말함 → 영어 번역도 추가
@@ -1448,7 +1458,7 @@ async function micTest() {
 }
 
 // ---------- 진단: 어디서 막히는지 한 번에 확인 ----------
-const APP_VERSION = 'v36';
+const APP_VERSION = 'v37';
 async function runDiag() {
   const out = [], box = $('#diag');
   const log = (ok, t) => { out.push((ok === true ? '✅ ' : ok === false ? '❌ ' : '• ') + t); box.textContent = out.join('\n'); };
